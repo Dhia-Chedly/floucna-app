@@ -1,0 +1,18 @@
+# ── Maven build output ────────────────────────────────────────
+target/
+*.class
+*.jar
+*.war
+
+# ── Runtime data (Docker volumes / local dev) ─────────────────
+floucna.db
+contracts/
+uploads/
+
+# ── Maven wrapper (keep if added, ignore binary) ──────────────
+.mvn/wrapper/maven-wrapper.jar
+
+# ── IDE ───────────────────────────────────────────────────────
+.idea/
+*.iml
+.vscode/

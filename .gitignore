@@ -1,0 +1,42 @@
+# ──────────────────────────────────────────────────────────────
+#  Floucna Mina Fina — Root .gitignore
+# ──────────────────────────────────────────────────────────────
+
+# ── Environment & Secrets ─────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.jks
+
+# ── OS ────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ── IDEs ──────────────────────────────────────────────────────
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Docker runtime data (live in named volumes) ───────────────
+# Do NOT commit generated DB / files — these are volume-managed
+floucna.db
+contracts/
+uploads/
+
+# ── Logs ──────────────────────────────────────────────────────
+*.log
+logs/

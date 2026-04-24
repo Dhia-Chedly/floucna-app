@@ -1,0 +1,14 @@
+# Normalize line endings: always store LF in the repo
+#   Windows checkouts will still get CRLF if core.autocrlf=true locally
+* text=auto eol=lf
+
+# Explicit binary files (no line-ending conversion)
+*.jpeg  binary
+*.jpg   binary
+*.png   binary
+*.ico   binary
+*.pdf   binary
+*.jar   binary
+*.zip   binary
+*.p12   binary
+*.jks   binary

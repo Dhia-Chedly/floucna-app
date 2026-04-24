@@ -1,0 +1,79 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────
+#  Floucna Mina Fina — Docker Compose
+#  Usage:
+#    docker compose up --build          # first run
+#    docker compose up -d               # detached
+#    docker compose down                # stop
+#    docker compose down -v             # stop + wipe volumes
+# ─────────────────────────────────────────────────────────
+
+services:
+
+  # ── Java / Javalin backend ──────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: floucna-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # SQLite database file (persisted across restarts)
+      - floucna-db:/app/data
+      # Generated PDF contracts
+      - floucna-contracts:/app/contracts
+      # KYC uploaded files
+      - floucna-uploads:/app/uploads
+    environment:
+      - FLOUCNA_DB_PATH=/app/data/floucna.db
+    networks:
+      - floucna-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── Next.js frontend ─────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Browser talks to backend on the HOST port (8080 mapped above)
+        NEXT_PUBLIC_API_URL: http://localhost:8080
+    container_name: floucna-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - floucna-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+# ─────────────────────────────────────────────────────────
+# Named volumes (Docker-managed, survive container restarts)
+# ─────────────────────────────────────────────────────────
+volumes:
+  floucna-db:
+    name: floucna-db
+  floucna-contracts:
+    name: floucna-contracts
+  floucna-uploads:
+    name: floucna-uploads
+
+networks:
+  floucna-net:
+    name: floucna-net
+    driver: bridge
