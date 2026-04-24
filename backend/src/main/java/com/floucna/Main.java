@@ -2,15 +2,17 @@ package com.floucna;
 
 import com.floucna.api.*;
 import com.floucna.db.Database;
+import com.floucna.service.SeedService;
 import io.javalin.Javalin;
 import java.util.Map;
-import io.javalin.http.staticfiles.Location;
 
 public class Main {
 
     public static void main(String[] args) {
-        // Initialize database
+        // Initialize database schema
         Database.initialize();
+        // Seed demo accounts (idempotent)
+        SeedService.seed();
 
         Javalin app = Javalin.create(config -> {
             config.bundledPlugins.enableCors(cors -> {
