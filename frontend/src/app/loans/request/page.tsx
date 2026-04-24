@@ -53,7 +53,7 @@ export default function LoanRequestPage() {
         {/* Risk ceiling info */}
         {user?.isVerified && (
           <div className="alert alert-info" style={{ marginBottom: 24 }}>
-            💡 Your current Risk Ceiling is <strong>DZD {maxAmount.toLocaleString()}</strong>. You cannot request more than this amount.
+            💡 Your current Risk Ceiling is <strong>TND {maxAmount.toLocaleString()}</strong>. You cannot request more than this amount.
           </div>
         )}
 
@@ -61,7 +61,7 @@ export default function LoanRequestPage() {
 
         <form onSubmit={handle} className="card" style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
           <div className="form-group">
-            <label className="form-label">Loan Amount (DZD)</label>
+            <label className="form-label">Loan Amount (TND)</label>
             <input
               id="loan-amount"
               className="input"
@@ -129,12 +129,12 @@ export default function LoanRequestPage() {
             <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-md)', padding: '16px 20px' }}>
               <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 8 }}>Loan Summary</div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem' }}>
-                <span>Principal</span><span style={{ fontWeight: 600 }}>DZD {Number(form.amount).toLocaleString()}</span>
+                <span>Principal</span><span style={{ fontWeight: 600 }}>TND {Number(form.amount).toLocaleString()}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', marginTop: 4 }}>
                 <span>Total Repayment</span>
                 <span style={{ fontWeight: 600, color: 'var(--orange)' }}>
-                  DZD {(Number(form.amount) * (1 + Number(form.interestRate) / 100)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                  TND {(Number(form.amount) * (1 + Number(form.interestRate) / 100)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </span>
               </div>
             </div>

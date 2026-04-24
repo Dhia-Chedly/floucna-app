@@ -18,9 +18,16 @@ import java.math.BigInteger;
 import java.nio.file.*;
 import java.security.*;
 import java.security.cert.X509Certificate;
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.Instant;
-import java.util.*;
+import java.util.Date;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.UUID;
 
 public class ContractService {
 
@@ -89,7 +96,7 @@ public class ContractService {
                 // Title
                 cs.setNonStrokingColor(new PDColor(new float[]{1f, 1f, 1f}, PDDeviceRGB.INSTANCE));
                 cs.beginText();
-                cs.setFont(PDType1Font.HELVETICA_BOLD, 20);
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 20);
                 cs.newLineAtOffset(40, 800);
                 cs.showText("FLOUCNA MINA FINA — LOAN AGREEMENT");
                 cs.endText();
@@ -107,19 +114,19 @@ public class ContractService {
                 writeField(cs, "Lender(s):", data.get("lenders").toString(), 40, y); y -= lineH * 1.5f;
 
                 writeSection(cs, "LOAN TERMS", 40, y); y -= lineH;
-                writeField(cs, "Principal Amount:", "DZD " + data.get("amount"), 40, y); y -= lineH;
+                writeField(cs, "Principal Amount:", "TND " + data.get("amount"), 40, y); y -= lineH;
                 writeField(cs, "Duration:", data.get("duration_days") + " days", 40, y); y -= lineH;
                 writeField(cs, "Interest Rate:", data.get("interest_rate") + "%", 40, y); y -= lineH;
                 writeField(cs, "Purpose:", data.get("purpose").toString(), 40, y); y -= lineH * 1.5f;
 
                 writeSection(cs, "LEGAL NOTICE", 40, y); y -= lineH;
                 cs.beginText();
-                cs.setFont(PDType1Font.HELVETICA, 9);
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 9);
                 cs.newLineAtOffset(40, y);
                 cs.showText("This agreement is legally binding and digitally signed using PAdES-compliant cryptographic standards.");
                 cs.endText(); y -= lineH;
                 cs.beginText();
-                cs.setFont(PDType1Font.HELVETICA, 9);
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 9);
                 cs.newLineAtOffset(40, y);
                 cs.showText("Any modification to this document after signing will invalidate the signature and constitute fraud.");
                 cs.endText(); y -= lineH * 2;
@@ -134,7 +141,7 @@ public class ContractService {
                 cs.fill();
                 cs.setNonStrokingColor(new PDColor(new float[]{1f, 1f, 1f}, PDDeviceRGB.INSTANCE));
                 cs.beginText();
-                cs.setFont(PDType1Font.HELVETICA, 8);
+                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 8);
                 cs.newLineAtOffset(40, 10);
                 cs.showText("Floucna Mina Fina — Secure P2P Micro-Lending Platform — Powered by SD-DSS & BouncyCastle");
                 cs.endText();
@@ -146,12 +153,12 @@ public class ContractService {
 
     private void writeField(PDPageContentStream cs, String label, String value, float x, float y) throws IOException {
         cs.beginText();
-        cs.setFont(PDType1Font.HELVETICA_BOLD, 10);
+        cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 10);
         cs.newLineAtOffset(x, y);
         cs.showText(label + " ");
         cs.endText();
         cs.beginText();
-        cs.setFont(PDType1Font.HELVETICA, 10);
+        cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 10);
         cs.newLineAtOffset(x + 120, y);
         cs.showText(value != null ? value : "N/A");
         cs.endText();
@@ -160,7 +167,7 @@ public class ContractService {
     private void writeSection(PDPageContentStream cs, String title, float x, float y) throws IOException {
         cs.setNonStrokingColor(new PDColor(new float[]{0.09f, 0.50f, 0.83f}, PDDeviceRGB.INSTANCE));
         cs.beginText();
-        cs.setFont(PDType1Font.HELVETICA_BOLD, 12);
+        cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 12);
         cs.newLineAtOffset(x, y);
         cs.showText("— " + title);
         cs.endText();
@@ -193,7 +200,7 @@ public class ContractService {
             StringBuilder lenders = new StringBuilder();
             while (lrs.next()) {
                 if (lenders.length() > 0) lenders.append(", ");
-                lenders.append(lrs.getString("full_name")).append(" (DZD ").append(lrs.getDouble("amount")).append(")");
+                lenders.append(lrs.getString("full_name")).append(" (TND ").append(lrs.getDouble("amount")).append(")");
             }
             data.put("lenders", lenders.toString());
             return data;

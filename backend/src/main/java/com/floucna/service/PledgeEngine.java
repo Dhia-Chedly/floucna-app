@@ -64,14 +64,14 @@ public class PledgeEngine {
             // Trigger contract generation asynchronously if funded
             if (fullyFunded) {
                 String borrowerId = lrs.getString("borrower_id");
-                Thread.ofVirtual().start(() -> {
+                new Thread(() -> {
                     try {
                         ContractService cs = new ContractService();
                         cs.generateAndSign(loanId, borrowerId);
                     } catch (Exception e) {
                         System.err.println("Contract generation failed: " + e.getMessage());
                     }
-                });
+                }).start();
             }
 
             return result;

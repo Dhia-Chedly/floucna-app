@@ -5,19 +5,20 @@ function getToken() {
   return localStorage.getItem('floucna_token');
 }
 
-function authHeaders() {
+function authHeaders(): Record<string, string> {
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 async function request(path: string, options: RequestInit = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...authHeaders(),
+    ...(options.headers as Record<string, string> || {}),
+  };
   const res = await fetch(`${API}${path}`, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...authHeaders(),
-      ...(options.headers || {}),
-    },
+    headers,
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Request failed');

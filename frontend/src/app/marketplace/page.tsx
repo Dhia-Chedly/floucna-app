@@ -94,7 +94,7 @@ export default function MarketplacePage() {
                 {/* Amount + purpose */}
                 <div>
                   <div style={{ fontSize: '1.6rem', fontWeight: 800, fontFamily: 'Space Grotesk,sans-serif', color: 'var(--text-primary)' }}>
-                    DZD {Number(loan.amount).toLocaleString()}
+                    TND {Number(loan.amount).toLocaleString()}
                   </div>
                   <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginTop: 4 }}>{loan.purpose || 'General Purpose'}</div>
                 </div>
@@ -122,7 +122,7 @@ export default function MarketplacePage() {
                     <input
                       className="input"
                       type="number"
-                      placeholder="Amount DZD"
+                      placeholder="Amount TND"
                       style={{ flex: 1 }}
                       value={amounts[loan.id] || ''}
                       onChange={e => setAmounts(a => ({ ...a, [loan.id]: Number(e.target.value) }))}

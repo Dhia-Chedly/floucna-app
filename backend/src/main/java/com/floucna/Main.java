@@ -17,11 +17,9 @@ public class Main {
         Javalin app = Javalin.create(config -> {
             config.bundledPlugins.enableCors(cors -> {
                 cors.addRule(rule -> {
-                    rule.allowHost("http://localhost:3000");
-                    rule.allowCredentials = true;
+                    rule.anyHost();
                 });
             });
-            config.useVirtualThreads = true;
         });
 
         // Health check for Docker

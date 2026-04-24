@@ -24,10 +24,10 @@ WORKDIR /app
 RUN addgroup --system floucna && adduser --system --ingroup floucna floucna
 
 # Copy fat JAR from builder
-COPY --from=builder /app/target/*-SNAPSHOT.jar app.jar
+COPY --from=builder /app/target/backend-1.0-SNAPSHOT.jar app.jar
 
 # Persistent directories (mounted as volumes)
-RUN mkdir -p contracts uploads && chown -R floucna:floucna /app
+RUN mkdir -p contracts uploads data && chown -R floucna:floucna /app
 
 USER floucna
 
@@ -36,4 +36,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -f http://localhost:8080/api/health || exit 1
 
-CMD ["java", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
+CMD ["java", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=75.0", "-cp", "app.jar", "com.floucna.Main"]

@@ -70,7 +70,7 @@ export default function DashboardPage() {
           </div>
           <div className="stat-card">
             <div className="stat-value" style={{ color: '#1B7FD4' }}>
-              {user.riskCeiling ? `DZD ${user.riskCeiling.toLocaleString()}` : '—'}
+              {user.riskCeiling ? `TND ${user.riskCeiling.toLocaleString()}` : '—'}
             </div>
             <div className="stat-label">Risk Ceiling</div>
           </div>
@@ -125,7 +125,7 @@ export default function DashboardPage() {
                   <tbody>
                     {loans.map(l => (
                       <tr key={l.id}>
-                        <td style={{ fontWeight: 600 }}>DZD {Number(l.amount).toLocaleString()}</td>
+                        <td style={{ fontWeight: 600 }}>TND {Number(l.amount).toLocaleString()}</td>
                         <td style={{ color: 'var(--text-secondary)' }}>{l.purpose}</td>
                         <td><span className={`badge ${statusColor(l.status)}`}>{l.status}</span></td>
                         <td>
