@@ -1,6 +1,8 @@
 package com.floucna.service;
 
 import com.floucna.db.Database;
+import com.floucna.util.ApiException;
+import com.floucna.util.InputValidator;
 import java.sql.*;
 import java.time.Instant;
 import java.util.*;
@@ -10,6 +12,14 @@ public class LoanService {
     public record LoanRequest(double amount, String purpose, int durationDays, double interestRate) {}
 
     public Map<String, Object> createLoan(String borrowerId, LoanRequest req) throws Exception {
+        if (req == null) {
+            throw new IllegalArgumentException("Request body is required");
+        }
+        double amount = InputValidator.requirePositiveAmount(req.amount(), "Amount", 100_000.0);
+        String purpose = InputValidator.requireName(req.purpose(), "Purpose", 500);
+        int durationDays = InputValidator.requireIntRange(req.durationDays(), "Duration days", 7, 365);
+        double interestRate = InputValidator.requirePositiveAmount(req.interestRate(), "Interest rate", 100.0);
+
         // Check verification and score
         try (Connection conn = Database.connect()) {
             PreparedStatement check = conn.prepareStatement(
@@ -20,7 +30,7 @@ public class LoanService {
             if (!rs.next() || rs.getInt("is_verified") == 0)
                 throw new Exception("Account not verified. Complete KYC first.");
             double ceiling = rs.getDouble("risk_ceiling");
-            if (req.amount() > ceiling)
+            if (amount > ceiling)
                 throw new Exception("Amount exceeds your Risk Ceiling of " + ceiling);
 
             String id = UUID.randomUUID().toString();
@@ -29,10 +39,10 @@ public class LoanService {
             );
             ins.setString(1, id);
             ins.setString(2, borrowerId);
-            ins.setDouble(3, req.amount());
-            ins.setString(4, req.purpose());
-            ins.setInt(5, req.durationDays());
-            ins.setDouble(6, req.interestRate());
+            ins.setDouble(3, amount);
+            ins.setString(4, purpose);
+            ins.setInt(5, durationDays);
+            ins.setDouble(6, interestRate);
             ins.setString(7, Instant.now().toString());
             ins.executeUpdate();
 
@@ -68,6 +78,20 @@ public class LoanService {
         }
     }
 
+    public Map<String, Object> getLoanDetailForViewer(String loanId, String viewerId, String viewerRole) throws Exception {
+        try (Connection conn = Database.connect()) {
+            Map<String, Object> loan = getLoanById(loanId, conn);
+            String borrowerId = String.valueOf(loan.get("borrower_id"));
+            boolean isOwner = borrowerId.equals(viewerId);
+            boolean isAdmin = "ADMIN".equals(viewerRole);
+            boolean isLender = "LENDER".equals(viewerRole);
+            if (!(isOwner || isAdmin || isLender)) {
+                throw new ApiException(403, "Forbidden");
+            }
+            return loan;
+        }
+    }
+
     private Map<String, Object> getLoanById(String id, Connection conn) throws SQLException {
         PreparedStatement ps = conn.prepareStatement(
             "SELECT l.*, u.full_name as borrower_name, fs.score FROM loans l " +
@@ -96,8 +120,25 @@ public class LoanService {
     }
 
     public void repay(String loanId, String borrowerId, double amount) throws Exception {
+        InputValidator.requirePositiveAmount(amount, "Repayment amount", 100_000.0);
         try (Connection conn = Database.connect()) {
             conn.setAutoCommit(false);
+
+            PreparedStatement loanPs = conn.prepareStatement(
+                "SELECT borrower_id, status FROM loans WHERE id=?"
+            );
+            loanPs.setString(1, loanId);
+            ResultSet loanRs = loanPs.executeQuery();
+            if (!loanRs.next()) {
+                throw new ApiException(404, "Loan not found");
+            }
+            if (!borrowerId.equals(loanRs.getString("borrower_id"))) {
+                throw new ApiException(403, "Forbidden");
+            }
+            if (!"ACTIVE".equals(loanRs.getString("status"))) {
+                throw new IllegalArgumentException("Repayments are allowed only for ACTIVE loans");
+            }
+
             // Record repayment
             PreparedStatement ins = conn.prepareStatement(
                 "INSERT INTO repayments (id, loan_id, amount, due_date, paid_at, status) VALUES (?,?,?,?,?,'PAID')"

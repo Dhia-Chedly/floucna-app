@@ -20,8 +20,9 @@ async function request(path: string, options: RequestInit = {}) {
     ...options,
     headers,
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  const isJson = res.headers.get('content-type')?.includes('application/json');
+  const data = isJson ? await res.json() : null;
+  if (!res.ok) throw new Error((data && data.error) || 'Request failed');
   return data;
 }
 
@@ -33,8 +34,12 @@ export const api = {
 
   // KYC
   kycStatus: () => request('/api/kyc/status'),
-  kycUpload: (form: FormData) =>
-    fetch(`${API}/api/kyc/upload`, { method: 'POST', headers: authHeaders(), body: form }).then(r => r.json()),
+  kycUpload: async (form: FormData) => {
+    const res = await fetch(`${API}/api/kyc/upload`, { method: 'POST', headers: authHeaders(), body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    return data;
+  },
 
   // Loans
   marketplace: () => request('/api/loans'),
@@ -50,7 +55,19 @@ export const api = {
 
   // Contracts
   contract: (loanId: string) => request(`/api/contracts/${loanId}`),
-  contractDownloadUrl: (loanId: string) => `${API}/api/contracts/${loanId}/download?token=${getToken()}`,
+  contractDownloadUrl: (loanId: string) => `${API}/api/contracts/${loanId}/download`,
+  downloadContract: async (loanId: string) => {
+    const res = await fetch(`${API}/api/contracts/${loanId}/download`, { headers: authHeaders() });
+    if (!res.ok) {
+      let error = 'Download failed';
+      try {
+        const data = await res.json();
+        error = data.error || error;
+      } catch {}
+      throw new Error(error);
+    }
+    return res.blob();
+  },
 
   // Admin
   verifyContract: (loanId: string) => request(`/api/contracts/${loanId}/verify`, { method: 'POST' }),

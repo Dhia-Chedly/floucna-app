@@ -29,6 +29,11 @@ services:
       - floucna-uploads:/app/uploads
     environment:
       - FLOUCNA_DB_PATH=/app/data/floucna.db
+      - FLOUCNA_ALLOWED_ORIGINS=http://localhost:3000
+      - FLOUCNA_JWT_SECRET=floucna-dev-only-change-in-production-secret-2026
+      - FLOUCNA_JWT_ISSUER=floucna-backend
+      - FLOUCNA_JWT_AUDIENCE=floucna-frontend
+      - FLOUCNA_ENABLE_DEMO_SEED=true
     networks:
       - floucna-net
     healthcheck:

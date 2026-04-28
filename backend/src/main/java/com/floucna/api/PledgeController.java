@@ -16,22 +16,24 @@ public class PledgeController {
 
     private static void pledge(Context ctx) {
         try {
-            String userId = JwtUtil.extractUserId(AuthController.extractToken(ctx));
+            AuthGuard.Principal principal = AuthGuard.requireRole(ctx, "LENDER");
+            String userId = principal.userId();
             String loanId = ctx.pathParam("id");
             PledgeEngine.PledgeRequest req = ctx.bodyAsClass(PledgeEngine.PledgeRequest.class);
             Map<String, Object> result = engine.pledge(loanId, userId, req.amount());
             AuditLogger.log(userId, "PLEDGE", loanId, ctx.ip());
             ctx.json(result);
         } catch (Exception e) {
-            ctx.status(400).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 
     private static void getPledges(Context ctx) {
         try {
+            AuthGuard.requireRole(ctx, "BORROWER", "LENDER", "ADMIN");
             ctx.json(engine.getPledgesForLoan(ctx.pathParam("id")));
         } catch (Exception e) {
-            ctx.status(400).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 }

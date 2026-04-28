@@ -1,25 +1,29 @@
 package com.floucna.service;
 
 import com.floucna.db.Database;
-import java.nio.file.*;
-import java.security.*;
-import java.sql.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.Instant;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 public class ComplianceService {
 
-    /**
-     * Verifies a contract's digital signature.
-     * In Phase 4 this will be replaced by full SD-DSS validation.
-     * For Phase 1-3, we re-verify the SHA256 hash of the PDF.
-     */
     public Map<String, Object> verifyContract(String loanId) throws Exception {
         try (Connection conn = Database.connect();
              PreparedStatement ps = conn.prepareStatement("SELECT * FROM contracts WHERE loan_id=?")) {
             ps.setString(1, loanId);
             ResultSet rs = ps.executeQuery();
-            if (!rs.next()) throw new Exception("Contract not found for loan " + loanId);
+            if (!rs.next()) {
+                throw new Exception("Contract not found for loan " + loanId);
+            }
 
             String pdfPath = rs.getString("pdf_path");
             String storedSig = rs.getString("signature_data");
@@ -29,37 +33,40 @@ public class ComplianceService {
             report.put("loanId", loanId);
             report.put("verifiedAt", Instant.now().toString());
 
-            // Check PDF exists
             boolean pdfExists = Files.exists(Path.of(pdfPath));
             report.put("documentFound", pdfExists);
 
-            // Verify SHA256 hash integrity
-            boolean hashOk = false;
+            boolean signaturePresent = storedSig != null && !storedSig.isBlank();
             String currentHash = "";
+            String storedHash = extractStoredHash(storedSig);
+            boolean hashMatch = false;
+
             if (pdfExists) {
                 byte[] bytes = Files.readAllBytes(Path.of(pdfPath));
-                MessageDigest md = MessageDigest.getInstance("SHA-256");
-                currentHash = HexFormat.of().formatHex(md.digest(bytes));
-                hashOk = storedSig != null && !storedSig.isEmpty();
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                currentHash = HexFormat.of().formatHex(digest.digest(bytes));
+                hashMatch = storedHash != null && storedHash.equalsIgnoreCase(currentHash);
             }
-            report.put("signaturePresent", hashOk);
-            report.put("documentHash", currentHash);
 
-            // TSA token check
-            boolean tsaValid = tsaToken != null && tsaToken.startsWith("TSA:");
-            report.put("timestampValid", tsaValid);
+            report.put("signaturePresent", signaturePresent);
+            report.put("storedHash", storedHash);
+            report.put("documentHash", currentHash);
+            report.put("hashMatch", hashMatch);
+
+            boolean timestampValid = tsaToken != null && tsaToken.startsWith("TSA:");
+            report.put("timestampValid", timestampValid);
             report.put("tsaToken", tsaToken);
 
-            // Overall result
-            boolean valid = pdfExists && hashOk && tsaValid;
-            report.put("overallValid", valid);
-            report.put("verdict", valid ? "VALID — Document integrity confirmed" : "INVALID — Verification failed");
+            boolean overallValid = pdfExists && signaturePresent && hashMatch && timestampValid;
+            report.put("overallValid", overallValid);
+            report.put("verdict", overallValid
+                ? "VALID - Document integrity confirmed"
+                : "INVALID - Verification failed");
 
-            // Store report
             PreparedStatement upd = conn.prepareStatement(
                 "UPDATE contracts SET is_verified=?, verify_report=? WHERE loan_id=?"
             );
-            upd.setInt(1, valid ? 1 : 0);
+            upd.setInt(1, overallValid ? 1 : 0);
             upd.setString(2, report.toString());
             upd.setString(3, loanId);
             upd.executeUpdate();
@@ -88,5 +95,18 @@ public class ComplianceService {
             }
             return list;
         }
+    }
+
+    private String extractStoredHash(String storedSig) {
+        if (storedSig == null || storedSig.isBlank()) {
+            return null;
+        }
+        String prefix = "SHA256:";
+        int hashStart = storedSig.indexOf(prefix);
+        int hashEnd = storedSig.indexOf(";SIG:");
+        if (hashStart != 0 || hashEnd <= prefix.length()) {
+            return null;
+        }
+        return storedSig.substring(prefix.length(), hashEnd);
     }
 }

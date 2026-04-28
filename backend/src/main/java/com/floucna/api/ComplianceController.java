@@ -16,29 +16,23 @@ public class ComplianceController {
 
     private static void verify(Context ctx) {
         try {
-            requireAdmin(ctx);
+            AuthGuard.Principal principal = AuthGuard.requireRole(ctx, "ADMIN");
             String loanId = ctx.pathParam("loanId");
             Map<String, Object> report = svc.verifyContract(loanId);
-            String actorId = JwtUtil.extractUserId(AuthController.extractToken(ctx));
-            AuditLogger.log(actorId, "VERIFY_CONTRACT", loanId, ctx.ip());
+            AuditLogger.log(principal.userId(), "VERIFY_CONTRACT", loanId, ctx.ip());
             ctx.json(report);
         } catch (Exception e) {
-            ctx.status(400).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 
     private static void auditLogs(Context ctx) {
         try {
-            requireAdmin(ctx);
+            AuthGuard.requireRole(ctx, "ADMIN");
             int limit = ctx.queryParamAsClass("limit", Integer.class).getOrDefault(100);
             ctx.json(svc.getAuditLogs(limit));
         } catch (Exception e) {
-            ctx.status(400).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
-    }
-
-    private static void requireAdmin(Context ctx) {
-        String role = JwtUtil.extractRole(AuthController.extractToken(ctx));
-        if (!"ADMIN".equals(role)) throw new RuntimeException("Forbidden");
     }
 }

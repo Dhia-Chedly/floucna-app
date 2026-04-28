@@ -1,15 +1,21 @@
 package com.floucna.service;
 
 import com.floucna.db.Database;
-import java.sql.*;
+import com.floucna.util.ApiException;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.Instant;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 public class KycService {
 
     public void submitKyc(String userId, String idFrontPath, String idBackPath, String selfiePath) throws Exception {
         try (Connection conn = Database.connect()) {
-            // Upsert KYC record
             PreparedStatement check = conn.prepareStatement("SELECT id FROM kyc_data WHERE user_id = ?");
             check.setString(1, userId);
             ResultSet rs = check.executeQuery();
@@ -53,7 +59,6 @@ public class KycService {
         }
     }
 
-    /** Admin: approve KYC — sets user as verified, initializes FloucnaScore */
     public void approveKyc(String kycUserId, boolean approve) throws Exception {
         try (Connection conn = Database.connect()) {
             conn.setAutoCommit(false);
@@ -66,16 +71,19 @@ public class KycService {
             upd.setString(1, newStatus);
             upd.setString(2, verifiedAt);
             upd.setString(3, kycUserId);
-            upd.executeUpdate();
+            int updatedRows = upd.executeUpdate();
+            if (updatedRows == 0) {
+                throw new ApiException(404, "KYC record not found");
+            }
+
+            PreparedStatement userUpd = conn.prepareStatement(
+                "UPDATE users SET is_verified=? WHERE id=?"
+            );
+            userUpd.setInt(1, approve ? 1 : 0);
+            userUpd.setString(2, kycUserId);
+            userUpd.executeUpdate();
 
             if (approve) {
-                PreparedStatement userUpd = conn.prepareStatement(
-                    "UPDATE users SET is_verified=1 WHERE id=?"
-                );
-                userUpd.setString(1, kycUserId);
-                userUpd.executeUpdate();
-
-                // Initialize FloucnaScore
                 PreparedStatement scoreCheck = conn.prepareStatement(
                     "SELECT user_id FROM floucna_scores WHERE user_id=?"
                 );

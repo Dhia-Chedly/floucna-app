@@ -1,6 +1,9 @@
 package com.floucna.db;
 
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.sql.Statement;
 
 public class Database {
 
@@ -13,7 +16,6 @@ public class Database {
 
     public static void initialize() {
         try (Connection conn = connect(); Statement stmt = conn.createStatement()) {
-            // Enable WAL mode for concurrency
             stmt.execute("PRAGMA journal_mode=WAL");
             stmt.execute("PRAGMA foreign_keys=ON");
 
@@ -23,7 +25,7 @@ public class Database {
                     email         TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
                     full_name     TEXT NOT NULL,
-                    role          TEXT NOT NULL DEFAULT 'BORROWER',
+                    role          TEXT NOT NULL DEFAULT 'BORROWER' CHECK (role IN ('BORROWER','LENDER','ADMIN')),
                     is_verified   INTEGER NOT NULL DEFAULT 0,
                     created_at    TEXT NOT NULL
                 )
@@ -109,7 +111,7 @@ public class Database {
                 )
             """);
 
-            System.out.println("✅ Database initialized successfully");
+            System.out.println("Database initialized successfully");
         } catch (SQLException e) {
             throw new RuntimeException("Failed to initialize database", e);
         }

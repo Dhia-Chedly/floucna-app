@@ -19,51 +19,54 @@ public class LoanController {
 
     private static void create(Context ctx) {
         try {
-            String userId = JwtUtil.extractUserId(AuthController.extractToken(ctx));
+            AuthGuard.Principal principal = AuthGuard.requireRole(ctx, "BORROWER");
+            String userId = principal.userId();
             LoanService.LoanRequest req = ctx.bodyAsClass(LoanService.LoanRequest.class);
             Map<String, Object> loan = svc.createLoan(userId, req);
             AuditLogger.log(userId, "LOAN_CREATE", loan.get("id").toString(), ctx.ip());
             ctx.status(201).json(loan);
         } catch (Exception e) {
-            ctx.status(400).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 
     private static void marketplace(Context ctx) {
         try {
+            AuthGuard.requireRole(ctx, "BORROWER", "LENDER", "ADMIN");
             ctx.json(svc.listMarketplace());
         } catch (Exception e) {
-            ctx.status(500).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 
     private static void myLoans(Context ctx) {
         try {
-            String userId = JwtUtil.extractUserId(AuthController.extractToken(ctx));
+            String userId = AuthGuard.requireRole(ctx, "BORROWER").userId();
             ctx.json(svc.listMyLoans(userId));
         } catch (Exception e) {
-            ctx.status(400).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 
     private static void detail(Context ctx) {
         try {
-            ctx.json(svc.getLoanDetail(ctx.pathParam("id")));
+            AuthGuard.Principal principal = AuthGuard.requireAuth(ctx);
+            ctx.json(svc.getLoanDetailForViewer(ctx.pathParam("id"), principal.userId(), principal.role()));
         } catch (Exception e) {
-            ctx.status(404).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 
     private static void repay(Context ctx) {
         try {
-            String userId = JwtUtil.extractUserId(AuthController.extractToken(ctx));
+            String userId = AuthGuard.requireRole(ctx, "BORROWER").userId();
             String loanId = ctx.pathParam("id");
             double amount = Double.parseDouble(ctx.queryParam("amount"));
             svc.repay(loanId, userId, amount);
             AuditLogger.log(userId, "LOAN_REPAY", loanId, ctx.ip());
             ctx.json(Map.of("message", "Repayment recorded"));
         } catch (Exception e) {
-            ctx.status(400).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 }

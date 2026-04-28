@@ -5,7 +5,6 @@ import com.floucna.util.*;
 import io.javalin.Javalin;
 import io.javalin.http.Context;
 import java.nio.file.*;
-import java.util.Map;
 
 public class ContractController {
     private static final ContractService svc = new ContractService();
@@ -17,22 +16,24 @@ public class ContractController {
 
     private static void getContract(Context ctx) {
         try {
-            ctx.json(svc.getContract(ctx.pathParam("loanId")));
+            AuthGuard.Principal principal = AuthGuard.requireAuth(ctx);
+            ctx.json(svc.getContractForViewer(ctx.pathParam("loanId"), principal.userId(), principal.role()));
         } catch (Exception e) {
-            ctx.status(404).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 
     private static void downloadPdf(Context ctx) {
         try {
-            Map<String, Object> contract = svc.getContract(ctx.pathParam("loanId"));
-            String pdfPath = contract.get("pdfPath").toString();
+            AuthGuard.Principal principal = AuthGuard.requireAuth(ctx);
+            String pdfPath = svc.getContractFilePathForViewer(ctx.pathParam("loanId"), principal.userId(), principal.role());
             byte[] bytes = Files.readAllBytes(Path.of(pdfPath));
             ctx.contentType("application/pdf");
             ctx.header("Content-Disposition", "attachment; filename=\"loan_agreement_" + ctx.pathParam("loanId") + ".pdf\"");
+            ctx.header("Cache-Control", "no-store");
             ctx.result(bytes);
         } catch (Exception e) {
-            ctx.status(404).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 }

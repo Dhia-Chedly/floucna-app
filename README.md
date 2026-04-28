@@ -169,6 +169,25 @@ Security Project/
 
 ---
 
+## Security Configuration
+
+Set these backend environment variables in production:
+
+| Variable | Description |
+|------|-------------|
+| `FLOUCNA_JWT_SECRET` | JWT signing secret (minimum 32 bytes) |
+| `FLOUCNA_JWT_EXPIRY_SECONDS` | Access token lifetime in seconds (default `86400`) |
+| `FLOUCNA_JWT_ISSUER` | Expected issuer claim (default `floucna-backend`) |
+| `FLOUCNA_JWT_AUDIENCE` | Expected audience claim (default `floucna-frontend`) |
+| `FLOUCNA_ALLOWED_ORIGINS` | Comma-separated frontend origins allowed by CORS |
+| `FLOUCNA_ENABLE_DEMO_SEED` | Enables/disables demo accounts seeding (`true`/`false`) |
+
+Notes:
+- If `FLOUCNA_JWT_SECRET` is missing, the backend generates an ephemeral key at startup and tokens become invalid after restart.
+- Keep demo seed disabled in production.
+
+---
+
 ## Development Phases
 
 - [x] **Phase 1** — Foundation: Javalin server, SQLite schema, JWT auth, base UI

@@ -1,6 +1,7 @@
 package com.floucna.service;
 
 import com.floucna.db.Database;
+import com.floucna.util.ApiException;
 import org.apache.pdfbox.pdmodel.*;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.*;
@@ -54,6 +55,8 @@ public class ContractService {
         sig.update(pdfBytes);
         byte[] sigBytes = sig.sign();
         String sigHex = HexFormat.of().formatHex(sigBytes);
+        String pdfHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(pdfBytes));
+        String storedSignaturePayload = "SHA256:" + pdfHash + ";SIG:" + sigHex;
 
         // 5. TSA mock token (timestamp + nonce)
         String tsaToken = "TSA:" + Instant.now().toString() + ":NONCE:" + UUID.randomUUID();
@@ -66,7 +69,7 @@ public class ContractService {
             ps.setString(1, UUID.randomUUID().toString());
             ps.setString(2, loanId);
             ps.setString(3, pdfPath);
-            ps.setString(4, sigHex);
+            ps.setString(4, storedSignaturePayload);
             ps.setString(5, tsaToken);
             ps.setString(6, Instant.now().toString());
             ps.executeUpdate();
@@ -227,20 +230,73 @@ public class ContractService {
     }
 
     public Map<String, Object> getContract(String loanId) throws Exception {
+        ContractView contractView = fetchContractView(loanId);
+        return toPublicContract(contractView);
+    }
+
+    public Map<String, Object> getContractForViewer(String loanId, String viewerId, String viewerRole) throws Exception {
+        ContractView contractView = fetchContractView(loanId);
+        requireContractAccess(contractView.borrowerId(), viewerId, viewerRole);
+        return toPublicContract(contractView);
+    }
+
+    public String getContractFilePathForViewer(String loanId, String viewerId, String viewerRole) throws Exception {
+        ContractView contractView = fetchContractView(loanId);
+        requireContractAccess(contractView.borrowerId(), viewerId, viewerRole);
+        return contractView.pdfPath();
+    }
+
+    private ContractView fetchContractView(String loanId) throws Exception {
         try (Connection conn = Database.connect();
-             PreparedStatement ps = conn.prepareStatement("SELECT * FROM contracts WHERE loan_id=?")) {
+             PreparedStatement ps = conn.prepareStatement(
+                "SELECT c.id, c.loan_id, c.pdf_path, c.signed_at, c.tsa_token, c.is_verified, c.verify_report, l.borrower_id " +
+                "FROM contracts c JOIN loans l ON l.id = c.loan_id WHERE c.loan_id=?"
+             )) {
             ps.setString(1, loanId);
             ResultSet rs = ps.executeQuery();
-            if (!rs.next()) throw new Exception("Contract not found");
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id", rs.getString("id"));
-            m.put("loanId", rs.getString("loan_id"));
-            m.put("pdfPath", rs.getString("pdf_path"));
-            m.put("signedAt", rs.getString("signed_at"));
-            m.put("tsaToken", rs.getString("tsa_token"));
-            m.put("isVerified", rs.getInt("is_verified") == 1);
-            m.put("verifyReport", rs.getString("verify_report"));
-            return m;
+            if (!rs.next()) {
+                throw new ApiException(404, "Contract not found");
+            }
+            return new ContractView(
+                rs.getString("id"),
+                rs.getString("loan_id"),
+                rs.getString("pdf_path"),
+                rs.getString("signed_at"),
+                rs.getString("tsa_token"),
+                rs.getInt("is_verified") == 1,
+                rs.getString("verify_report"),
+                rs.getString("borrower_id")
+            );
         }
     }
+
+    private void requireContractAccess(String ownerUserId, String viewerUserId, String viewerRole) {
+        boolean isAdmin = "ADMIN".equals(viewerRole);
+        boolean isOwner = ownerUserId != null && ownerUserId.equals(viewerUserId);
+        if (!(isAdmin || isOwner)) {
+            throw new ApiException(403, "Forbidden");
+        }
+    }
+
+    private Map<String, Object> toPublicContract(ContractView contractView) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", contractView.id());
+        m.put("loanId", contractView.loanId());
+        m.put("signedAt", contractView.signedAt());
+        m.put("tsaToken", contractView.tsaToken());
+        m.put("isVerified", contractView.isVerified());
+        m.put("verifyReport", contractView.verifyReport());
+        return m;
+    }
+
+    private record ContractView(
+        String id,
+        String loanId,
+        String pdfPath,
+        String signedAt,
+        String tsaToken,
+        boolean isVerified,
+        String verifyReport,
+        String borrowerId
+    ) {}
 }

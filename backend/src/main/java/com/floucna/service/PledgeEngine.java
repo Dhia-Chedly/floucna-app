@@ -1,6 +1,8 @@
 package com.floucna.service;
 
 import com.floucna.db.Database;
+import com.floucna.util.ApiException;
+import com.floucna.util.InputValidator;
 import java.sql.*;
 import java.time.Instant;
 import java.util.*;
@@ -10,10 +12,24 @@ public class PledgeEngine {
     public record PledgeRequest(double amount) {}
 
     public Map<String, Object> pledge(String loanId, String lenderId, double amount) throws Exception {
+        InputValidator.requirePositiveAmount(amount, "Pledge amount", 100_000.0);
         try (Connection conn = Database.connect()) {
             conn.setAutoCommit(false);
             // BEGIN IMMEDIATE for safe concurrent writes
             conn.createStatement().execute("BEGIN IMMEDIATE");
+
+            PreparedStatement userPs = conn.prepareStatement("SELECT role, is_verified FROM users WHERE id=?");
+            userPs.setString(1, lenderId);
+            ResultSet userRs = userPs.executeQuery();
+            if (!userRs.next()) {
+                throw new ApiException(404, "Lender not found");
+            }
+            if (!"LENDER".equals(userRs.getString("role"))) {
+                throw new ApiException(403, "Forbidden");
+            }
+            if (userRs.getInt("is_verified") == 0) {
+                throw new IllegalArgumentException("Lender account is not verified");
+            }
 
             // Fetch loan
             PreparedStatement ls = conn.prepareStatement("SELECT * FROM loans WHERE id=?");
@@ -21,13 +37,15 @@ public class PledgeEngine {
             ResultSet lrs = ls.executeQuery();
             if (!lrs.next()) throw new Exception("Loan not found");
             if (!lrs.getString("status").equals("PENDING")) throw new Exception("Loan is not open for funding");
+            if (lenderId.equals(lrs.getString("borrower_id"))) {
+                throw new IllegalArgumentException("Borrower cannot pledge to own loan");
+            }
 
             double loanAmount = lrs.getDouble("amount");
             double currentFunding = lrs.getDouble("funding_pct") * loanAmount / 100.0;
             double remaining = loanAmount - currentFunding;
 
             if (amount > remaining) throw new Exception("Pledge exceeds remaining amount of " + remaining);
-            if (amount <= 0) throw new Exception("Pledge amount must be positive");
 
             // Insert pledge
             PreparedStatement pi = conn.prepareStatement(

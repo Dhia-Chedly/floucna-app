@@ -16,7 +16,7 @@ public class AdminController {
 
     private static void listUsers(Context ctx) {
         try {
-            requireAdmin(ctx);
+            AuthGuard.requireRole(ctx, "ADMIN");
             try (Connection conn = Database.connect();
                  PreparedStatement ps = conn.prepareStatement(
                     "SELECT u.id, u.email, u.full_name, u.role, u.is_verified, u.created_at, fs.score, fs.risk_ceiling " +
@@ -39,13 +39,13 @@ public class AdminController {
                 ctx.json(list);
             }
         } catch (Exception e) {
-            ctx.status(400).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 
     private static void getStats(Context ctx) {
         try {
-            requireAdmin(ctx);
+            AuthGuard.requireRole(ctx, "ADMIN");
             try (Connection conn = Database.connect()) {
                 Map<String, Object> stats = new LinkedHashMap<>();
                 stats.put("totalUsers", queryCount(conn, "SELECT COUNT(*) FROM users"));
@@ -58,17 +58,12 @@ public class AdminController {
                 ctx.json(stats);
             }
         } catch (Exception e) {
-            ctx.status(400).json(Map.of("error", e.getMessage()));
+            ApiErrorHandler.handle(ctx, e);
         }
     }
 
     private static long queryCount(Connection conn, String sql) throws SQLException {
         ResultSet rs = conn.createStatement().executeQuery(sql);
         return rs.next() ? rs.getLong(1) : 0;
-    }
-
-    private static void requireAdmin(Context ctx) {
-        String role = JwtUtil.extractRole(AuthController.extractToken(ctx));
-        if (!"ADMIN".equals(role)) throw new RuntimeException("Forbidden");
     }
 }
