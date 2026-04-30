@@ -1,96 +1,107 @@
 'use client';
-import { useState } from 'react';
+
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useRouter } from 'next/navigation';
+import { useState } from 'react';
 
 export default function LoanRequestPage() {
   const { user } = useAuth();
   const router = useRouter();
-  const [form, setForm] = useState({ amount: '', purpose: '', durationDays: '30', interestRate: '5' });
+
+  const [form, setForm] = useState({
+    amount: '',
+    durationDays: '30',
+    purpose: '',
+    declaredIncome: '',
+    declaredExistingDebt: '',
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState(false);
+  const [success, setSuccess] = useState<string | null>(null);
 
-  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
-    setForm(f => ({ ...f, [k]: e.target.value }));
+  const set =
+    (key: keyof typeof form) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+      setForm(prev => ({ ...prev, [key]: e.target.value }));
+    };
 
-  const handle = async (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true); setError('');
+    setLoading(true);
+    setError('');
+
     try {
-      await api.createLoan({
+      const loan = await api.createLoan({
         amount: Number(form.amount),
-        purpose: form.purpose,
+        currency: 'TND',
         durationDays: Number(form.durationDays),
-        interestRate: Number(form.interestRate),
+        purpose: form.purpose,
+        declaredIncome: form.declaredIncome ? Number(form.declaredIncome) : null,
+        declaredExistingDebt: form.declaredExistingDebt ? Number(form.declaredExistingDebt) : null,
       });
-      setSuccess(true);
-      setTimeout(() => router.push('/dashboard'), 2000);
-    } catch (err: any) { setError(err.message); }
-    finally { setLoading(false); }
+
+      setSuccess(`Submitted with demo score ${loan.demo_score} (${loan.score_label}).`);
+      setTimeout(() => router.push('/dashboard'), 1800);
+    } catch (err: any) {
+      setError(err.message || 'Failed to submit loan request');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  if (success) return (
-    <div className="page flex-center" style={{ minHeight: '100vh', flexDirection: 'column', gap: 20 }}>
-      <div style={{ fontSize: '4rem' }}>🎉</div>
-      <h2>Loan Request Submitted!</h2>
-      <p>Your request is now live on the marketplace. Lenders can start funding it immediately.</p>
-    </div>
-  );
-
-  const maxAmount = user?.riskCeiling ?? 0;
+  if (!user) return null;
 
   return (
     <div className="page">
-      <div className="container" style={{ maxWidth: 640, paddingTop: 40, paddingBottom: 60 }}>
-        <div style={{ marginBottom: 32 }}>
-          <button className="btn btn-ghost btn-sm" onClick={() => router.back()} style={{ marginBottom: 16 }}>← Back</button>
-          <h1 style={{ marginBottom: 8 }}>Request a Loan</h1>
-          <p>Fill in the details below. Your request will be validated against your Floucna Score.</p>
+      <div className="container" style={{ maxWidth: 720, paddingTop: 40, paddingBottom: 60 }}>
+        <div style={{ marginBottom: 28 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => router.back()} style={{ marginBottom: 14 }}>
+            Back
+          </button>
+          <h1 style={{ marginBottom: 8 }}>Submit Loan Request</h1>
+          <p>Requests are reviewed by admin after KYC verification and demo scoring.</p>
         </div>
 
-        {/* Risk ceiling info */}
-        {user?.isVerified && (
-          <div className="alert alert-info" style={{ marginBottom: 24 }}>
-            💡 Your current Risk Ceiling is <strong>TND {maxAmount.toLocaleString()}</strong>. You cannot request more than this amount.
+        {user.kycStatus !== 'VERIFIED' && (
+          <div className="alert alert-error" style={{ marginBottom: 18 }}>
+            KYC must be VERIFIED before submitting a loan request.
           </div>
         )}
 
         {error && <div className="alert alert-error">{error}</div>}
+        {success && <div className="alert alert-success">{success}</div>}
 
-        <form onSubmit={handle} className="card" style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+        <form onSubmit={submit} className="card" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <div className="form-group">
-            <label className="form-label">Loan Amount (TND)</label>
-            <input
-              id="loan-amount"
-              className="input"
-              type="number"
-              placeholder="e.g. 10000"
-              value={form.amount}
-              onChange={set('amount')}
-              min={100}
-              max={maxAmount || undefined}
-              required
-            />
-            {form.amount && maxAmount > 0 && (
-              <div style={{ marginTop: 8 }}>
-                <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: `${Math.min((Number(form.amount) / maxAmount) * 100, 100)}%` }} />
-                </div>
-                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 4 }}>
-                  {Math.round((Number(form.amount) / maxAmount) * 100)}% of your risk ceiling
-                </div>
-              </div>
-            )}
+            <label className="form-label">Amount (TND)</label>
+            <input className="input" type="number" min={1} value={form.amount} onChange={set('amount')} required />
+          </div>
+
+          <div className="grid-2">
+            <div className="form-group">
+              <label className="form-label">Currency</label>
+              <input className="input" value="TND" disabled />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Duration</label>
+              <select className="input" value={form.durationDays} onChange={set('durationDays')}>
+                <option value="7">7 days</option>
+                <option value="14">14 days</option>
+                <option value="30">30 days</option>
+                <option value="60">60 days</option>
+                <option value="90">90 days</option>
+                <option value="180">180 days</option>
+                <option value="365">365 days</option>
+              </select>
+            </div>
           </div>
 
           <div className="form-group">
-            <label className="form-label">Purpose of Loan</label>
+            <label className="form-label">Purpose</label>
             <textarea
-              id="loan-purpose"
               className="input"
-              placeholder="e.g. Purchase laptop for university, Emergency medical expenses..."
+              placeholder="Medical expense, education, business equipment, etc."
               value={form.purpose}
               onChange={set('purpose')}
               required
@@ -99,49 +110,17 @@ export default function LoanRequestPage() {
 
           <div className="grid-2">
             <div className="form-group">
-              <label className="form-label">Duration</label>
-              <select id="loan-duration" className="input" value={form.durationDays} onChange={set('durationDays')}>
-                <option value="7">7 days</option>
-                <option value="14">14 days</option>
-                <option value="30">30 days</option>
-                <option value="60">60 days</option>
-                <option value="90">90 days</option>
-                <option value="180">6 months</option>
-              </select>
+              <label className="form-label">Declared Monthly Income (TND)</label>
+              <input className="input" type="number" min={0} value={form.declaredIncome} onChange={set('declaredIncome')} />
             </div>
             <div className="form-group">
-              <label className="form-label">Interest Rate (%)</label>
-              <input
-                id="loan-rate"
-                className="input"
-                type="number"
-                step="0.5"
-                min="1"
-                max="20"
-                value={form.interestRate}
-                onChange={set('interestRate')}
-              />
+              <label className="form-label">Declared Existing Debt (TND)</label>
+              <input className="input" type="number" min={0} value={form.declaredExistingDebt} onChange={set('declaredExistingDebt')} />
             </div>
           </div>
 
-          {/* Summary */}
-          {form.amount && (
-            <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-md)', padding: '16px 20px' }}>
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 8 }}>Loan Summary</div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem' }}>
-                <span>Principal</span><span style={{ fontWeight: 600 }}>TND {Number(form.amount).toLocaleString()}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', marginTop: 4 }}>
-                <span>Total Repayment</span>
-                <span style={{ fontWeight: 600, color: 'var(--orange)' }}>
-                  TND {(Number(form.amount) * (1 + Number(form.interestRate) / 100)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                </span>
-              </div>
-            </div>
-          )}
-
-          <button id="loan-submit" className="btn btn-primary btn-lg btn-full" type="submit" disabled={loading || !user?.isVerified}>
-            {!user?.isVerified ? 'Complete KYC First' : loading ? <><span className="spinner" /> Submitting...</> : 'Submit Loan Request →'}
+          <button className="btn btn-primary btn-lg btn-full" type="submit" disabled={loading || user.kycStatus !== 'VERIFIED'}>
+            {loading ? <span className="spinner" /> : 'Submit Request'}
           </button>
         </form>
       </div>

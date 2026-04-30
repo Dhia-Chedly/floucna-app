@@ -1,162 +1,150 @@
 'use client';
-import { useState, useRef } from 'react';
+
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 
 export default function KycPage() {
   const { user } = useAuth();
   const router = useRouter();
-  const [files, setFiles] = useState<{ front?: File; back?: File; selfie?: File }>({});
-  const [previews, setPreviews] = useState<{ front?: string; back?: string; selfie?: string }>({});
-  const [step, setStep] = useState<'upload' | 'submitting' | 'done' | 'already'>('upload');
+
+  const [status, setStatus] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [starting, setStarting] = useState(false);
+  const [uploadMode, setUploadMode] = useState(false);
+  const [idPhoto, setIdPhoto] = useState<File | null>(null);
+  const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [camActive, setCamActive] = useState(false);
 
-  const handleFile = (key: 'front' | 'back' | 'selfie') => (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setFiles(f => ({ ...f, [key]: file }));
-    setPreviews(p => ({ ...p, [key]: URL.createObjectURL(file) }));
+  const loadStatus = async () => {
+    setLoading(true);
+    try {
+      setStatus(await api.kycStatus());
+    } catch (err: any) {
+      setError(err.message || 'Failed to load KYC status');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const startCam = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-    if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play(); }
-    setCamActive(true);
+  useEffect(() => {
+    if (!user) {
+      router.replace('/login');
+      return;
+    }
+    loadStatus();
+  }, [user, router]);
+
+  const startKyc = async () => {
+    setStarting(true);
+    setError('');
+    setMessage('');
+    try {
+      const session = await api.kycSession();
+      setStatus((prev: any) => ({ ...(prev || {}), ...session }));
+
+      if (session.mode === 'DIDIT' && session.verificationUrl) {
+        window.open(session.verificationUrl, '_blank', 'noopener,noreferrer');
+        setMessage('Didit verification opened in a new tab. Complete it, then refresh status.');
+        setUploadMode(false);
+      } else {
+        setUploadMode(true);
+        setMessage('Local fallback mode enabled. Upload your ID photo for admin review.');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to start KYC session');
+    } finally {
+      setStarting(false);
+    }
   };
 
-  const captureSelfie = () => {
-    if (!videoRef.current) return;
-    const canvas = document.createElement('canvas');
-    canvas.width = videoRef.current.videoWidth;
-    canvas.height = videoRef.current.videoHeight;
-    canvas.getContext('2d')!.drawImage(videoRef.current, 0, 0);
-    canvas.toBlob(blob => {
-      if (!blob) return;
-      const file = new File([blob], 'selfie.jpg', { type: 'image/jpeg' });
-      setFiles(f => ({ ...f, selfie: file }));
-      setPreviews(p => ({ ...p, selfie: URL.createObjectURL(blob) }));
-      (videoRef.current!.srcObject as MediaStream).getTracks().forEach(t => t.stop());
-      setCamActive(false);
-    }, 'image/jpeg');
-  };
+  const submitLocal = async () => {
+    if (!idPhoto) {
+      setError('Please choose an ID photo.');
+      return;
+    }
 
-  const submit = async () => {
-    if (!files.front || !files.back || !files.selfie) { setError('Please provide all three documents.'); return; }
-    setStep('submitting'); setError('');
+    setError('');
+    setMessage('');
+
     try {
       const form = new FormData();
-      form.append('idFront', files.front);
-      form.append('idBack', files.back);
-      form.append('selfie', files.selfie);
-      await api.kycUpload(form);
-      setStep('done');
-    } catch (e: any) { setError(e.message); setStep('upload'); }
+      form.append('idPhoto', idPhoto);
+      await api.kycLocalUpload(form);
+      setMessage('ID uploaded successfully. Your KYC is now under admin review.');
+      setUploadMode(false);
+      await loadStatus();
+    } catch (err: any) {
+      setError(err.message || 'Upload failed');
+    }
   };
 
-  if (step === 'done') return (
-    <div className="page flex-center" style={{ minHeight: '100vh', flexDirection: 'column', gap: 20 }}>
-      <div style={{ fontSize: '4rem' }}>✅</div>
-      <h2>KYC Submitted!</h2>
-      <p>Your documents are under review. We'll notify you once verified.</p>
-      <button className="btn btn-primary" onClick={() => router.push('/dashboard')}>Back to Dashboard</button>
-    </div>
-  );
+  if (!user) return null;
+
+  const statusValue = status?.status || 'NOT_STARTED';
+  const badgeClass =
+    statusValue === 'VERIFIED'
+      ? 'badge-green'
+      : statusValue === 'UNDER_REVIEW' || statusValue === 'SESSION_CREATED'
+        ? 'badge-amber'
+        : statusValue === 'REJECTED'
+          ? 'badge-red'
+          : 'badge-blue';
 
   return (
     <div className="page">
-      <div className="container" style={{ maxWidth: 720, paddingTop: 40, paddingBottom: 60 }}>
-        <div style={{ marginBottom: 32 }}>
+      <div className="container" style={{ maxWidth: 760, paddingTop: 40, paddingBottom: 60 }}>
+        <div style={{ marginBottom: 26 }}>
           <h1 style={{ marginBottom: 8 }}>Identity Verification</h1>
-          <p>Upload your official ID documents to unlock all platform features.</p>
+          <p>Complete KYC using Didit when configured, or local fallback review for offline/demo mode.</p>
         </div>
 
         {error && <div className="alert alert-error">{error}</div>}
+        {message && <div className="alert alert-success">{message}</div>}
 
-        {/* Steps progress */}
-        <div style={{ display: 'flex', gap: 0, marginBottom: 36, position: 'relative' }}>
-          {['ID Front', 'ID Back', 'Selfie'].map((s, i) => {
-            const done = (i === 0 && files.front) || (i === 1 && files.back) || (i === 2 && files.selfie);
-            return (
-              <div key={s} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, position: 'relative' }}>
-                {i > 0 && <div style={{ position: 'absolute', top: 16, left: '-50%', right: '50%', height: 2, background: done ? 'var(--orange)' : 'var(--border)' }} />}
-                <div style={{
-                  width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: done ? 'var(--grad-brand)' : 'var(--surface-2)',
-                  border: `2px solid ${done ? 'var(--orange)' : 'var(--border)'}`,
-                  fontWeight: 700, fontSize: '0.85rem', transition: 'all 0.3s',
-                }}>
-                  {done ? '✓' : i + 1}
+        <div className="card" style={{ marginBottom: 24 }}>
+          {loading ? (
+            <div className="skeleton" style={{ height: 62 }} />
+          ) : (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: 4 }}>Current Status</div>
+                  <span className={`badge ${badgeClass}`} style={{ fontSize: '0.85rem' }}>{statusValue}</span>
                 </div>
-                <span style={{ fontSize: '0.8rem', color: done ? 'var(--orange)' : 'var(--text-muted)' }}>{s}</span>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-ghost btn-sm" onClick={loadStatus}>Refresh</button>
+                  <button className="btn btn-primary btn-sm" onClick={startKyc} disabled={starting || statusValue === 'VERIFIED'}>
+                    {starting ? <span className="spinner" /> : statusValue === 'VERIFIED' ? 'Already Verified' : 'Start KYC'}
+                  </button>
+                </div>
               </div>
-            );
-          })}
+
+              {status?.mode && (
+                <p style={{ marginTop: 12, fontSize: '0.85rem' }}>
+                  Active mode: <strong>{status.mode}</strong>
+                </p>
+              )}
+            </>
+          )}
         </div>
 
-        <div className="grid-3" style={{ marginBottom: 32 }}>
-          {/* ID Front */}
-          <div className="card" style={{ textAlign: 'center', cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>
-            <label htmlFor="id-front" style={{ cursor: 'pointer', display: 'block' }}>
-              {previews.front ? (
-                <img src={previews.front} alt="ID Front" style={{ width: '100%', height: 140, objectFit: 'cover', borderRadius: 'var(--radius-sm)' }} />
-              ) : (
-                <div style={{ height: 140, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--text-muted)' }}>
-                  <span style={{ fontSize: '2rem' }}>🪪</span>
-                  <span style={{ fontSize: '0.85rem' }}>ID Card Front</span>
-                  <span style={{ fontSize: '0.75rem' }}>Click to upload</span>
-                </div>
-              )}
-              <input id="id-front" type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFile('front')} />
-            </label>
-            {files.front && <div className="badge badge-green" style={{ marginTop: 10 }}>✓ Uploaded</div>}
+        {uploadMode && (
+          <div className="card">
+            <h3 style={{ marginBottom: 10 }}>Local Fallback Upload</h3>
+            <p style={{ fontSize: '0.9rem', marginBottom: 14 }}>
+              Upload a clear image of your ID card. An admin will review and approve/reject manually.
+            </p>
+            <div className="form-group" style={{ marginBottom: 14 }}>
+              <label className="form-label">ID Photo</label>
+              <input className="input" type="file" accept="image/*" onChange={e => setIdPhoto(e.target.files?.[0] || null)} />
+            </div>
+            <button className="btn btn-primary" onClick={submitLocal} disabled={!idPhoto}>
+              Submit Local KYC
+            </button>
           </div>
-
-          {/* ID Back */}
-          <div className="card" style={{ textAlign: 'center', cursor: 'pointer' }}>
-            <label htmlFor="id-back" style={{ cursor: 'pointer', display: 'block' }}>
-              {previews.back ? (
-                <img src={previews.back} alt="ID Back" style={{ width: '100%', height: 140, objectFit: 'cover', borderRadius: 'var(--radius-sm)' }} />
-              ) : (
-                <div style={{ height: 140, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--text-muted)' }}>
-                  <span style={{ fontSize: '2rem' }}>🪪</span>
-                  <span style={{ fontSize: '0.85rem' }}>ID Card Back</span>
-                  <span style={{ fontSize: '0.75rem' }}>Click to upload</span>
-                </div>
-              )}
-              <input id="id-back" type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFile('back')} />
-            </label>
-            {files.back && <div className="badge badge-green" style={{ marginTop: 10 }}>✓ Uploaded</div>}
-          </div>
-
-          {/* Selfie */}
-          <div className="card" style={{ textAlign: 'center' }}>
-            {previews.selfie ? (
-              <img src={previews.selfie} alt="Selfie" style={{ width: '100%', height: 140, objectFit: 'cover', borderRadius: 'var(--radius-sm)', marginBottom: 10 }} />
-            ) : camActive ? (
-              <video ref={videoRef} style={{ width: '100%', height: 140, objectFit: 'cover', borderRadius: 'var(--radius-sm)', marginBottom: 10 }} />
-            ) : (
-              <div style={{ height: 140, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--text-muted)' }}>
-                <span style={{ fontSize: '2rem' }}>🤳</span>
-                <span style={{ fontSize: '0.85rem' }}>Liveness Selfie</span>
-              </div>
-            )}
-            {!files.selfie && !camActive && <button className="btn btn-ghost btn-sm btn-full" onClick={startCam}>Open Webcam</button>}
-            {camActive && <button className="btn btn-primary btn-sm btn-full" onClick={captureSelfie}>📸 Capture</button>}
-            {files.selfie && <div className="badge badge-green" style={{ marginTop: 10 }}>✓ Captured</div>}
-          </div>
-        </div>
-
-        <button
-          id="kyc-submit"
-          className="btn btn-primary btn-lg btn-full"
-          onClick={submit}
-          disabled={step === 'submitting' || !files.front || !files.back || !files.selfie}
-        >
-          {step === 'submitting' ? <><span className="spinner" /> Verifying...</> : 'Submit for Verification'}
-        </button>
+        )}
       </div>
     </div>
   );

@@ -1,17 +1,52 @@
-version: "3.9"
-
-# ─────────────────────────────────────────────────────────
-#  Floucna Mina Fina — Docker Compose
-#  Usage:
-#    docker compose up --build          # first run
-#    docker compose up -d               # detached
-#    docker compose down                # stop
-#    docker compose down -v             # stop + wipe volumes
-# ─────────────────────────────────────────────────────────
-
 services:
+  keycloak-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=keycloak
+      - POSTGRES_USER=keycloak
+      - POSTGRES_PASSWORD=keycloak
+    volumes:
+      - floucna-keycloak-db:/var/lib/postgresql/data
+    networks:
+      - floucna-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
-  # ── Java / Javalin backend ──────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1
+    restart: unless-stopped
+    command: start-dev --import-realm
+    ports:
+      - "8081:8080"
+    environment:
+      - KC_DB=postgres
+      - KC_DB_URL=jdbc:postgresql://keycloak-db:5432/keycloak
+      - KC_DB_USERNAME=keycloak
+      - KC_DB_PASSWORD=keycloak
+      - KC_HOSTNAME=http://localhost:8081
+      - KC_HOSTNAME_STRICT=false
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=admin123
+      - KC_HEALTH_ENABLED=true
+    volumes:
+      - ./keycloak/realm-floucna.json:/opt/keycloak/data/import/realm-floucna.json:ro
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    networks:
+      - floucna-net
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
   backend:
     build:
       context: ./backend
@@ -21,21 +56,39 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      # SQLite database file (persisted across restarts)
       - floucna-db:/app/data
-      # Generated PDF contracts
-      - floucna-contracts:/app/contracts
-      # KYC uploaded files
-      - floucna-uploads:/app/uploads
+      - floucna-storage:/app/storage
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - FLOUCNA_DB_PATH=/app/data/floucna.db
       - FLOUCNA_ALLOWED_ORIGINS=http://localhost:3000
-      - FLOUCNA_JWT_SECRET=floucna-dev-only-change-in-production-secret-2026
-      - FLOUCNA_JWT_ISSUER=floucna-backend
-      - FLOUCNA_JWT_AUDIENCE=floucna-frontend
-      - FLOUCNA_ENABLE_DEMO_SEED=true
+
+      # Auth mode: KEYCLOAK or LOCAL
+      - FLOUCNA_AUTH_MODE=KEYCLOAK
+
+      # Keycloak (required only when FLOUCNA_AUTH_MODE=KEYCLOAK)
+      - FLOUCNA_KEYCLOAK_INTROSPECTION_URL=http://keycloak:8080/realms/floucna/protocol/openid-connect/token/introspect
+      - FLOUCNA_KEYCLOAK_CLIENT_ID=floucna-backend
+      - FLOUCNA_KEYCLOAK_CLIENT_SECRET=1HJXGipQYftfaqiVd4J5IzzRxel6HfKq
+
+      # KYC mode: DIDIT or LOCAL
+      - FLOUCNA_KYC_MODE=DIDIT
+      - FLOUCNA_KYC_ALLOW_FALLBACK=false
+      - FLOUCNA_DIDIT_API_BASE_URL=${FLOUCNA_DIDIT_API_BASE_URL:-https://verification.didit.me}
+      - FLOUCNA_DIDIT_WORKFLOW_ID=${FLOUCNA_DIDIT_WORKFLOW_ID:?Set FLOUCNA_DIDIT_WORKFLOW_ID in .env}
+      - FLOUCNA_DIDIT_API_KEY=${FLOUCNA_DIDIT_API_KEY:?Set FLOUCNA_DIDIT_API_KEY in .env}
+      - FLOUCNA_DIDIT_WEBHOOK_SECRET=${FLOUCNA_DIDIT_WEBHOOK_SECRET:?Set FLOUCNA_DIDIT_WEBHOOK_SECRET in .env}
+      - FLOUCNA_DIDIT_WEBHOOK_URL=${FLOUCNA_DIDIT_WEBHOOK_URL:-https://${NGROK_DOMAIN}/api/kyc/webhook/didit}
+      - FLOUCNA_DIDIT_CALLBACK_URL=${FLOUCNA_DIDIT_CALLBACK_URL:-http://localhost:3000/kyc}
+
+      # Enhanced schema reset on startup
+      - FLOUCNA_SCHEMA_RESET=true
     networks:
       - floucna-net
+    depends_on:
+      keycloak:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/health || exit 1"]
       interval: 15s
@@ -43,14 +96,35 @@ services:
       retries: 5
       start_period: 30s
 
-  # ── Next.js frontend ─────────────────────────────────────
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: floucna-ngrok
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+      - NGROK_DOMAIN=${NGROK_DOMAIN:-}
+    command:
+      - "http"
+      - "http://backend:8080"
+      - "--url=https://${NGROK_DOMAIN:?Set NGROK_DOMAIN in .env}"
+    ports:
+      - "4040:4040"
+    networks:
+      - floucna-net
+
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # Browser talks to backend on the HOST port (8080 mapped above)
         NEXT_PUBLIC_API_URL: http://localhost:8080
+        NEXT_PUBLIC_AUTH_MODE: KEYCLOAK
+        NEXT_PUBLIC_KEYCLOAK_URL: http://localhost:8081
+        NEXT_PUBLIC_KEYCLOAK_REALM: floucna
+        NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: floucna-frontend
     container_name: floucna-frontend
     restart: unless-stopped
     ports:
@@ -58,6 +132,11 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    environment:
+      - NEXT_PUBLIC_AUTH_MODE=KEYCLOAK
+      - NEXT_PUBLIC_KEYCLOAK_URL=http://localhost:8081
+      - NEXT_PUBLIC_KEYCLOAK_REALM=floucna
+      - NEXT_PUBLIC_KEYCLOAK_CLIENT_ID=floucna-frontend
     networks:
       - floucna-net
     healthcheck:
@@ -67,16 +146,13 @@ services:
       retries: 3
       start_period: 20s
 
-# ─────────────────────────────────────────────────────────
-# Named volumes (Docker-managed, survive container restarts)
-# ─────────────────────────────────────────────────────────
 volumes:
   floucna-db:
     name: floucna-db
-  floucna-contracts:
-    name: floucna-contracts
-  floucna-uploads:
-    name: floucna-uploads
+  floucna-storage:
+    name: floucna-storage
+  floucna-keycloak-db:
+    name: floucna-keycloak-db
 
 networks:
   floucna-net:

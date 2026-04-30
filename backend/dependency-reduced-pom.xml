@@ -45,16 +45,15 @@
     </repository>
   </repositories>
   <properties>
-    <jackson.version>2.17.1</jackson.version>
+    <pdfbox.version>3.0.2</pdfbox.version>
+    <maven.compiler.target>17</maven.compiler.target>
     <dss.version>5.13</dss.version>
     <slf4j.version>2.0.13</slf4j.version>
-    <jjwt.version>0.12.5</jjwt.version>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <javalin.version>6.3.0</javalin.version>
-    <sqlite.version>3.45.3.0</sqlite.version>
-    <pdfbox.version>3.0.2</pdfbox.version>
     <bcprov.version>1.78.1</bcprov.version>
     <maven.compiler.source>17</maven.compiler.source>
-    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <jackson.version>2.17.1</jackson.version>
+    <javalin.version>6.3.0</javalin.version>
+    <sqlite.version>3.45.3.0</sqlite.version>
   </properties>
 </project>

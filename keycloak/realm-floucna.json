@@ -1,0 +1,93 @@
+{
+  "realm": "floucna",
+  "enabled": true,
+  "displayName": "Floucna",
+  "registrationAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "roles": {
+    "realm": [
+      {
+        "name": "ADMIN",
+        "description": "Administrative users"
+      },
+      {
+        "name": "BORROWER",
+        "description": "Default borrower users"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "floucna-frontend",
+      "name": "floucna-frontend",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:3000/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      }
+    },
+    {
+      "clientId": "floucna-backend",
+      "name": "floucna-backend",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "secret": "1HJXGipQYftfaqiVd4J5IzzRxel6HfKq"
+    }
+  ],
+  "users": [
+    {
+      "username": "admin",
+      "enabled": true,
+      "email": "admin@floucna.local",
+      "emailVerified": true,
+      "firstName": "Admin",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "ADMIN"
+      ]
+    },
+    {
+      "username": "borrower",
+      "enabled": true,
+      "email": "borrower@floucna.local",
+      "emailVerified": true,
+      "firstName": "Borrower",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "borrower123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "BORROWER"
+      ]
+    }
+  ]
+}

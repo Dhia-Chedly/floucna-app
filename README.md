@@ -1,214 +1,205 @@
-# Floucna Mina Fina 🔐
-> Secure P2P Micro-Lending Platform — IT360 Cybersecurity Project
+# Floucna Mina Fina
 
-A peer-to-peer lending portal with biometric identity verification (KYC), dynamic trust scoring (Floucna Score), crowdfunded loan marketplace, PAdES digital contracts, and an admin compliance dashboard.
+Enhanced secure micro-lending portal for Project 15.
 
----
+The project now follows `floucna_project15_enhanced_hld.md` as the single source of truth:
+- Keycloak/OIDC authentication with BORROWER and ADMIN roles
+- Didit KYC integration with local fallback
+- Borrower loan submission + admin approval flow
+- PDF generation, signing, timestamping, and compliance verification
+- Audit logging for all critical actions
 
-## Tech Stack
+## Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | Next.js 18 (App Router) · TypeScript · Vanilla CSS |
-| Backend | Java 17 · Javalin 6 · SQLite (WAL mode) |
-| Cryptography | Europa SD-DSS · BouncyCastle · Apache PDFBox |
-| Auth | JWT (JJWT) · BCrypt |
-| Containerisation | Docker · Docker Compose |
+- Frontend: Next.js (App Router), TypeScript
+- Backend: Java 17, Javalin
+- Database: SQLite
+- PDF/Crypto: Apache PDFBox, BouncyCastle
+- Compliance: DSS-oriented verification flow
 
----
+## Run Locally
 
-## Quickstart — Docker (Recommended)
-
-**Prerequisites:** Docker Desktop installed and running.
+### Full stack with Docker Compose (includes persistent Keycloak)
 
 ```bash
-# 1. Clone the repo
-git clone <repo-url>
-cd "Security Project"
-
-# 2. Build and start everything
-docker compose up --build
-
-# 3. Open the app
-#    Frontend  → http://localhost:3000
-#    Backend   → http://localhost:8080
-#    Health    → http://localhost:8080/api/health
+docker compose up --build -d
 ```
 
-To stop:
+Services:
+- Frontend: `http://localhost:3000`
+- Backend: `http://localhost:8080`
+- Keycloak: `http://localhost:8081`
+
+Keycloak bootstrap:
+- Admin console user: `admin`
+- Admin console password: `admin123`
+- Realm: `floucna` (auto-imported from `keycloak/realm-floucna.json`)
+- Borrower self-signup: enabled (use `http://localhost:3000/register`)
+- Test borrower user: `borrower` / `borrower123`
+- Test admin user: `admin` / `admin123`
+
+Persistence:
+- Keycloak database is stored in docker volume `floucna-keycloak-db`.
+- Backend SQLite data is stored in docker volume `floucna-db`.
+
+If you need a clean reset:
+
 ```bash
-docker compose down          # stop containers (data preserved)
-docker compose down -v       # stop + wipe all data volumes
+docker compose down -v
+docker compose up --build -d
 ```
 
----
+### Use Didit KYC (provider mode)
 
-## Quickstart — Local Development
+1. Prepare env file:
 
-### Backend (Java)
+```bash
+cp .env.example .env
+```
 
-**Prerequisites:** Java 17+, Maven 3.9+
+2. Fill all Didit variables in `.env`:
+- `FLOUCNA_DIDIT_WORKFLOW_ID`
+- `FLOUCNA_DIDIT_API_KEY`
+- `FLOUCNA_DIDIT_WEBHOOK_SECRET`
+- `NGROK_AUTHTOKEN`
+- `NGROK_DOMAIN` (recommended, stable URL)
+
+Optional:
+- `FLOUCNA_DIDIT_WEBHOOK_URL` (override; otherwise auto-derived from `NGROK_DOMAIN`)
+
+To list workflows and get `FLOUCNA_DIDIT_WORKFLOW_ID`:
+
+```bash
+curl --request GET \
+  --url https://verification.didit.me/v3/workflows/ \
+  --header "x-api-key: YOUR_API_KEY"
+```
+
+Use a KYC workflow `uuid` from the response.
+
+3. Make sure `FLOUCNA_DIDIT_WEBHOOK_URL` is public and ends with:
+- `/api/kyc/webhook/didit`
+
+With the default compose setup:
+- `ngrok` starts automatically.
+- Webhook URL becomes `https://<NGROK_DOMAIN>/api/kyc/webhook/didit`.
+- ngrok inspector is available at `http://localhost:4040`.
+- If you do not reserve a domain, ngrok URL can change on restart and you must update Didit webhook settings.
+
+4. Start services:
+
+```bash
+docker compose up -d --build
+```
+
+In this repository, compose is now configured for Didit-first KYC (`FLOUCNA_KYC_MODE=DIDIT`) with fallback disabled, so missing/invalid Didit config fails fast instead of silently switching to local upload.
+
+### Backend
 
 ```bash
 cd backend
-mvn package -DskipTests
+chmod +x mvnw
+./mvnw -DskipTests package
 java -jar target/backend-1.0-SNAPSHOT.jar
-# → Running on http://localhost:8080
 ```
 
-### Frontend (Next.js)
+Backend runs on `http://localhost:8080`.
 
-**Prerequisites:** Node.js 20+
+### Frontend
 
 ```bash
 cd frontend
-
-# First time: copy env template
-cp .env.example .env.local
-
 npm install
 npm run dev
-# → Running on http://localhost:3000
 ```
 
----
+Frontend runs on `http://localhost:3000`.
 
-## Project Structure
+## Auth Modes
 
-```
-Security Project/
-├── docker-compose.yml          # Orchestrates both services
-├── .gitignore                  # Root ignore rules
-├── HLD.md                      # High Level Design document
-├── implementation_plan.md      # Project roadmap
-│
-├── backend/                    # Java / Javalin API server
-│   ├── Dockerfile
-│   ├── pom.xml
-│   └── src/main/java/com/floucna/
-│       ├── Main.java
-│       ├── api/                # HTTP controllers
-│       │   ├── AuthController.java
-│       │   ├── KycController.java
-│       │   ├── LoanController.java
-│       │   ├── PledgeController.java
-│       │   ├── ContractController.java
-│       │   ├── ComplianceController.java
-│       │   └── AdminController.java
-│       ├── service/            # Business logic
-│       │   ├── AuthService.java
-│       │   ├── KycService.java
-│       │   ├── LoanService.java
-│       │   ├── PledgeEngine.java
-│       │   ├── ScoringEngine.java
-│       │   ├── ContractService.java
-│       │   └── ComplianceService.java
-│       ├── db/
-│       │   └── Database.java   # SQLite schema + connection
-│       └── util/
-│           ├── JwtUtil.java
-│           └── AuditLogger.java
-│
-└── frontend/                   # Next.js App Router
-    ├── Dockerfile
-    ├── .env.example            # ← copy to .env.local
-    └── src/
-        ├── app/
-        │   ├── page.tsx            # Landing
-        │   ├── login/page.tsx
-        │   ├── register/page.tsx
-        │   ├── dashboard/page.tsx
-        │   ├── kyc/page.tsx
-        │   ├── marketplace/page.tsx
-        │   ├── loans/request/page.tsx
-        │   └── admin/
-        │       ├── page.tsx         # Admin hub + KYC queue
-        │       ├── compliance/page.tsx
-        │       ├── audit/page.tsx
-        │       └── users/page.tsx
-        ├── components/
-        │   └── Navbar.tsx
-        └── lib/
-            ├── api.ts              # Typed API client
-            └── auth-context.tsx    # Global auth state
-```
+Set backend and frontend auth mode via env.
 
----
+### 1) Keycloak mode (recommended)
 
-## API Endpoints
+Backend:
+- `FLOUCNA_AUTH_MODE=KEYCLOAK`
+- `FLOUCNA_KEYCLOAK_INTROSPECTION_URL=...`
+- `FLOUCNA_KEYCLOAK_CLIENT_ID=...`
+- `FLOUCNA_KEYCLOAK_CLIENT_SECRET=...`
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/api/health` | None | Docker health check |
-| POST | `/api/auth/register` | None | Register user |
-| POST | `/api/auth/login` | None | Login → JWT |
-| GET | `/api/auth/me` | JWT | Get own profile |
-| POST | `/api/kyc/upload` | JWT | Submit KYC documents |
-| GET | `/api/kyc/status` | JWT | Own KYC status |
-| POST | `/api/kyc/{id}/approve?approve=true` | ADMIN | Approve/reject KYC |
-| GET | `/api/loans` | JWT | Marketplace listing |
-| POST | `/api/loans` | BORROWER | Create loan request |
-| POST | `/api/loans/{id}/pledge` | LENDER | Fund a loan |
-| GET | `/api/contracts/{loanId}` | JWT | Contract metadata |
-| GET | `/api/contracts/{loanId}/download` | JWT | Download signed PDF |
-| POST | `/api/contracts/{loanId}/verify` | ADMIN | Verify signature |
-| GET | `/api/admin/audit-logs` | ADMIN | Audit trail |
-| GET | `/api/admin/stats` | ADMIN | Platform statistics |
+Frontend:
+- `NEXT_PUBLIC_AUTH_MODE=KEYCLOAK`
+- `NEXT_PUBLIC_KEYCLOAK_URL=...`
+- `NEXT_PUBLIC_KEYCLOAK_REALM=...`
+- `NEXT_PUBLIC_KEYCLOAK_CLIENT_ID=...`
 
----
+### 2) Local token mode (dev fallback)
 
-## User Roles
+Backend:
+- `FLOUCNA_AUTH_MODE=LOCAL`
 
-| Role | Capabilities |
-|------|-------------|
-| `BORROWER` | Register → KYC → Request loans → Repay |
-| `LENDER` | Register → KYC → Browse marketplace → Pledge |
-| `ADMIN` | All of the above + approve KYC + verify contracts + audit logs |
+Frontend:
+- `NEXT_PUBLIC_AUTH_MODE=LOCAL`
 
-> **Create an ADMIN account:** Register normally then manually update `role = 'ADMIN'` in the SQLite DB using DBeaver or the sqlite3 CLI.
+In LOCAL mode, login page accepts a local bearer token payload (JWT-like structure with `sub`, `email`, optional `role` or `roles`).
 
----
+## KYC Modes
 
-## Security Configuration
+- `FLOUCNA_KYC_MODE=DIDIT` for provider mode
+- `FLOUCNA_KYC_MODE=LOCAL` for fallback mode
+- `FLOUCNA_KYC_ALLOW_FALLBACK=true` to auto-fallback when provider fails
 
-Set these backend environment variables in production:
+Didit envs (for DIDIT mode):
+- `FLOUCNA_DIDIT_API_BASE_URL` (default `https://verification.didit.me`)
+- `FLOUCNA_DIDIT_WORKFLOW_ID`
+- `FLOUCNA_DIDIT_API_KEY`
+- `FLOUCNA_DIDIT_WEBHOOK_SECRET`
+- `NGROK_AUTHTOKEN`
+- `NGROK_DOMAIN`
+- `FLOUCNA_DIDIT_WEBHOOK_URL` (optional override)
+- `FLOUCNA_DIDIT_CALLBACK_URL` (optional, default `http://localhost:3000/kyc`)
 
-| Variable | Description |
-|------|-------------|
-| `FLOUCNA_JWT_SECRET` | JWT signing secret (minimum 32 bytes) |
-| `FLOUCNA_JWT_EXPIRY_SECONDS` | Access token lifetime in seconds (default `86400`) |
-| `FLOUCNA_JWT_ISSUER` | Expected issuer claim (default `floucna-backend`) |
-| `FLOUCNA_JWT_AUDIENCE` | Expected audience claim (default `floucna-frontend`) |
-| `FLOUCNA_ALLOWED_ORIGINS` | Comma-separated frontend origins allowed by CORS |
-| `FLOUCNA_ENABLE_DEMO_SEED` | Enables/disables demo accounts seeding (`true`/`false`) |
+## Schema Reset
 
-Notes:
-- If `FLOUCNA_JWT_SECRET` is missing, the backend generates an ephemeral key at startup and tokens become invalid after restart.
-- Keep demo seed disabled in production.
+The app uses enhanced-schema tables only (`users`, `kyc_records`, `loan_requests`, `contracts`, `audit_logs`).
 
----
+- `FLOUCNA_SCHEMA_RESET=true` (default) performs hard reset at startup.
 
-## Development Phases
+## API Overview
 
-- [x] **Phase 1** — Foundation: Javalin server, SQLite schema, JWT auth, base UI
-- [x] **Phase 2** — KYC: File upload, webcam selfie, mock verification, score init
-- [x] **Phase 3** — Marketplace: Loan creation, crowdfunding, pledge engine, scoring
-- [ ] **Phase 4** — PAdES: Full SD-DSS integration, trusted TSA timestamping
-- [ ] **Phase 5** — Compliance: DSS signature validator, admin verification dashboard
-- [ ] **Phase 6** — Polish: Animations, E2E tests, tamper detection demo
+### Auth
+- `GET /api/me`
 
----
+### KYC
+- `POST /api/kyc/session`
+- `GET /api/kyc/status`
+- `POST /api/kyc/local/upload`
+- `POST /api/kyc/webhook/didit`
+- `GET /api/admin/kyc/pending`
+- `POST /api/admin/kyc/{id}/approve`
+- `POST /api/admin/kyc/{id}/reject`
 
-## Contributing
+### Loans
+- `POST /api/loans`
+- `GET /api/loans/me`
+- `GET /api/loans/{id}`
+- `GET /api/admin/loans`
+- `POST /api/admin/loans/{id}/approve`
+- `POST /api/admin/loans/{id}/reject`
 
-1. Create a feature branch: `git checkout -b feature/your-feature`
-2. Copy env template: `cp frontend/.env.example frontend/.env.local`
-3. Start with Docker: `docker compose up --build`
-4. Make your changes, test locally
-5. Open a pull request — describe your changes clearly
+### Contracts
+- `GET /api/contracts/{loanId}`
+- `GET /api/contracts/{loanId}/download`
+- `GET /api/admin/contracts`
+- `POST /api/admin/contracts/generate/{loanId}`
+- `POST /api/admin/contracts/sign/{loanId}`
+- `POST /api/admin/contracts/timestamp/{loanId}`
 
----
+### Compliance and Audit
+- `POST /api/admin/compliance/verify`
+- `GET /api/admin/compliance/reports`
+- `GET /api/admin/audit-logs`
 
-## Team
+## Note
 
-IT360 Cybersecurity Project — 2026
+Legacy marketplace/lender/pledge/repayment flows were removed as part of the hard cut to the enhanced HLD scope.

@@ -1,14 +1,13 @@
 package com.floucna;
 
 import com.floucna.api.AdminController;
+import com.floucna.api.AdminLoanController;
 import com.floucna.api.AuthController;
 import com.floucna.api.ComplianceController;
 import com.floucna.api.ContractController;
 import com.floucna.api.KycController;
 import com.floucna.api.LoanController;
-import com.floucna.api.PledgeController;
 import com.floucna.db.Database;
-import com.floucna.service.SeedService;
 import io.javalin.Javalin;
 import java.util.Arrays;
 import java.util.Map;
@@ -17,12 +16,11 @@ public class Main {
 
     public static void main(String[] args) {
         Database.initialize();
-        SeedService.seed();
 
         String[] allowedOrigins = resolveAllowedOrigins();
 
         Javalin app = Javalin.create(config -> {
-            config.http.maxRequestSize = 15_000_000L;
+            config.http.maxRequestSize = 20_000_000L;
             config.bundledPlugins.enableCors(cors -> cors.addRule(rule -> {
                 for (String origin : allowedOrigins) {
                     rule.allowHost(origin);
@@ -34,8 +32,7 @@ public class Main {
             ctx.header("X-Content-Type-Options", "nosniff");
             ctx.header("X-Frame-Options", "DENY");
             ctx.header("Referrer-Policy", "no-referrer");
-            ctx.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-            ctx.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none';");
+            ctx.header("Permissions-Policy", "camera=(self), microphone=(), geolocation=()");
         });
 
         app.get("/api/health", ctx -> ctx.json(Map.of("status", "UP")));
@@ -43,7 +40,7 @@ public class Main {
         AuthController.register(app);
         KycController.register(app);
         LoanController.register(app);
-        PledgeController.register(app);
+        AdminLoanController.register(app);
         ContractController.register(app);
         ComplianceController.register(app);
         AdminController.register(app);

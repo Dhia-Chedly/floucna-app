@@ -1,67 +1,104 @@
 'use client';
-import { useState, Suspense } from 'react';
-import { useAuth } from '@/lib/auth-context';
-import { useRouter, useSearchParams } from 'next/navigation';
 
-function LoginForm() {
-  const { login } = useAuth();
+import { useAuth } from '@/lib/auth-context';
+import { useRouter } from 'next/navigation';
+import { useEffect } from 'react';
+import { useState } from 'react';
+
+export default function LoginPage() {
+  const { user, loading: authLoading, authMode, login, setLocalToken, clearLocalToken } = useAuth();
   const router = useRouter();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+
+  const [token, setToken] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handle = async (e: React.FormEvent) => {
+  useEffect(() => {
+    if (!authLoading && user) {
+      router.replace('/dashboard');
+    }
+  }, [authLoading, user, router]);
+
+  const handleLocalLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true); setError('');
+    setError('');
+    setLoading(true);
     try {
-      await login(email, password);
+      await setLocalToken(token.trim());
       router.replace('/dashboard');
     } catch (err: any) {
-      setError(err.message);
-    } finally { setLoading(false); }
+      setError(err.message || 'Invalid token');
+      clearLocalToken();
+    } finally {
+      setLoading(false);
+    }
   };
 
-  return (
-    <form onSubmit={handle} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {error && <div className="alert alert-error">{error}</div>}
-      <div className="form-group">
-        <label className="form-label">Email Address</label>
-        <input id="login-email" className="input" type="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} required />
-      </div>
-      <div className="form-group">
-        <label className="form-label">Password</label>
-        <input id="login-password" className="input" type="password" placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} required />
-      </div>
-      <button id="login-submit" className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading}>
-        {loading ? <span className="spinner" /> : 'Sign In'}
-      </button>
-    </form>
-  );
-}
-
-export default function LoginPage() {
-  const router = useRouter();
   return (
     <div className="flex-center page" style={{ minHeight: '100vh' }}>
       <div style={{ position: 'absolute', inset: 0 }}>
         <div className="orb orb-blue" style={{ top: '10%', right: '10%', opacity: 0.1 }} />
         <div className="orb orb-orange" style={{ bottom: '10%', left: '10%', opacity: 0.1 }} />
       </div>
-      <div className="card anim-scale-in" style={{ width: '100%', maxWidth: 420, position: 'relative', zIndex: 1 }}>
-        <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <img src="/logo.jpeg" alt="Floucna" style={{ width: 60, height: 60, borderRadius: 16, marginBottom: 16, objectFit: 'cover' }} />
-          <h2 style={{ marginBottom: 6 }}>Welcome back</h2>
-          <p style={{ fontSize: '0.9rem' }}>Sign in to your Floucna account</p>
+
+      <div className="card anim-scale-in" style={{ width: '100%', maxWidth: 460, position: 'relative', zIndex: 1 }}>
+        <div style={{ textAlign: 'center', marginBottom: 26 }}>
+          <img src="/logo.jpeg" alt="Floucna" style={{ width: 60, height: 60, borderRadius: 16, marginBottom: 14, objectFit: 'cover' }} />
+          <h2 style={{ marginBottom: 6 }}>Access Floucna</h2>
+          <p style={{ fontSize: '0.9rem' }}>Secure authentication for borrower and admin roles.</p>
         </div>
-        <Suspense>
-          <LoginForm />
-        </Suspense>
-        <div className="divider" />
-        <p style={{ textAlign: 'center', fontSize: '0.9rem' }}>
-          No account?{' '}
-          <button className="btn btn-ghost btn-sm" onClick={() => router.push('/register')}>Create one →</button>
-        </p>
+
+        {authMode === 'KEYCLOAK' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <button
+              className="btn btn-primary btn-full btn-lg"
+              onClick={async () => {
+                setLoading(true);
+                try {
+                  await login();
+                } catch (err: any) {
+                  setError(err.message || 'Keycloak login failed');
+                  setLoading(false);
+                }
+              }}
+              disabled={loading}
+            >
+              {loading ? <span className="spinner" /> : 'Login with Keycloak'}
+            </button>
+            <button
+              className="btn btn-ghost btn-full btn-lg"
+              onClick={() => router.push('/register')}
+              disabled={loading}
+            >
+              Create Borrower Account
+            </button>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+              If Keycloak session is active, you will be redirected automatically.
+            </p>
+          </div>
+        ) : (
+          <form onSubmit={handleLocalLogin} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div className="alert alert-info" style={{ marginBottom: 0 }}>
+              LOCAL mode is enabled. Paste a JWT-like token with `sub`, `email`, and optional `role`/`roles` claims.
+            </div>
+            <div className="form-group">
+              <label className="form-label">Local Bearer Token</label>
+              <textarea
+                className="input"
+                value={token}
+                onChange={e => setToken(e.target.value)}
+                placeholder="eyJhbGciOi..."
+                style={{ minHeight: 120, fontFamily: 'monospace', fontSize: '0.8rem' }}
+                required
+              />
+            </div>
+            <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading || !token.trim()}>
+              {loading ? <span className="spinner" /> : 'Continue'}
+            </button>
+          </form>
+        )}
+
+        {error && <div className="alert alert-error" style={{ marginTop: 14 }}>{error}</div>}
       </div>
     </div>
   );

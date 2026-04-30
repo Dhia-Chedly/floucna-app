@@ -4,8 +4,9 @@ import { AuthProvider } from '@/lib/auth-context';
 import Navbar from '@/components/Navbar';
 
 export const metadata: Metadata = {
-  title: 'Floucna Mina Fina — Secure P2P Micro-Lending',
-  description: 'A secure, cryptographically-enforced peer-to-peer lending platform with PAdES digital signatures and trusted timestamping.',
+  title: 'Floucna Mina Fina - Enhanced Secure Micro-Lending',
+  description:
+    'Secure micro-lending portal with Keycloak authentication, KYC verification, signed PDF agreements, timestamping, and compliance validation.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

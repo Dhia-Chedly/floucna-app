@@ -2,11 +2,33 @@ package com.floucna.service;
 
 import com.floucna.db.Database;
 import com.floucna.util.ApiException;
-import org.apache.pdfbox.pdmodel.*;
+import java.io.IOException;
+import java.math.BigInteger;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
+import java.security.Signature;
+import java.security.cert.X509Certificate;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
-import org.apache.pdfbox.pdmodel.font.*;
-import org.apache.pdfbox.pdmodel.graphics.color.PDColor;
-import org.apache.pdfbox.pdmodel.graphics.color.PDDeviceRGB;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.cert.X509v3CertificateBuilder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
@@ -14,289 +36,407 @@ import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
-import java.io.*;
-import java.math.BigInteger;
-import java.nio.file.*;
-import java.security.*;
-import java.security.cert.X509Certificate;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.time.Instant;
-import java.util.Date;
-import java.util.HexFormat;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.UUID;
-
 public class ContractService {
 
-    private static final String CONTRACTS_DIR = "contracts";
+    private static final Path CONTRACT_ROOT = Path.of("storage", "contracts").toAbsolutePath().normalize();
 
-    public void generateAndSign(String loanId, String borrowerId) throws Exception {
-        Files.createDirectories(Path.of(CONTRACTS_DIR));
-
-        // 1. Fetch loan + lenders
-        Map<String, Object> loanData = fetchLoanData(loanId);
-
-        // 2. Generate PDF
-        String pdfPath = CONTRACTS_DIR + "/" + loanId + ".pdf";
-        generatePdf(loanData, pdfPath);
-
-        // 3. Generate self-signed certificate (BouncyCastle)
-        KeyPair keyPair = generateKeyPair();
-        X509Certificate cert = generateSelfSignedCert(keyPair, loanData.get("borrower_name").toString());
-
-        // 4. Sign with a simple SHA256withRSA signature (PAdES via SD-DSS requires full Maven build)
-        byte[] pdfBytes = Files.readAllBytes(Path.of(pdfPath));
-        Signature sig = Signature.getInstance("SHA256withRSA");
-        sig.initSign(keyPair.getPrivate());
-        sig.update(pdfBytes);
-        byte[] sigBytes = sig.sign();
-        String sigHex = HexFormat.of().formatHex(sigBytes);
-        String pdfHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(pdfBytes));
-        String storedSignaturePayload = "SHA256:" + pdfHash + ";SIG:" + sigHex;
-
-        // 5. TSA mock token (timestamp + nonce)
-        String tsaToken = "TSA:" + Instant.now().toString() + ":NONCE:" + UUID.randomUUID();
-
-        // 6. Store in DB
-        try (Connection conn = Database.connect();
-             PreparedStatement ps = conn.prepareStatement(
-                "INSERT OR REPLACE INTO contracts (id, loan_id, pdf_path, signature_data, tsa_token, signed_at, is_verified) VALUES (?,?,?,?,?,?,0)"
-             )) {
-            ps.setString(1, UUID.randomUUID().toString());
-            ps.setString(2, loanId);
-            ps.setString(3, pdfPath);
-            ps.setString(4, storedSignaturePayload);
-            ps.setString(5, tsaToken);
-            ps.setString(6, Instant.now().toString());
-            ps.executeUpdate();
+    public Map<String, Object> generatePdfContract(String loanId) throws Exception {
+        LoanContext loan = loadLoanContext(loanId);
+        if (!"APPROVED".equals(loan.status())) {
+            throw new ApiException(400, "Loan must be APPROVED before generating a contract");
         }
 
-        // 7. Update loan status to ACTIVE
-        try (Connection conn = Database.connect();
-             PreparedStatement ps = conn.prepareStatement("UPDATE loans SET status='ACTIVE' WHERE id=?")) {
-            ps.setString(1, loanId);
-            ps.executeUpdate();
+        Path loanDir = CONTRACT_ROOT.resolve(loanId).normalize();
+        if (!loanDir.startsWith(CONTRACT_ROOT)) {
+            throw new ApiException(400, "Invalid contract path");
         }
+        Files.createDirectories(loanDir);
 
-        System.out.println("✅ Contract generated and signed for loan " + loanId);
+        Path unsignedPdf = loanDir.resolve("loan_agreement_unsigned.pdf");
+        generatePdf(loan, unsignedPdf);
+
+        upsertContract(loanId, Map.of(
+            "unsigned_pdf_path", unsignedPdf.toString(),
+            "status", "PDF_GENERATED"
+        ));
+
+        return getContractByLoanId(loanId);
     }
 
-    private void generatePdf(Map<String, Object> data, String outputPath) throws Exception {
+    public Map<String, Object> signPdfContract(String loanId) throws Exception {
+        ContractRow contract = loadContract(loanId);
+        if (contract.unsignedPdfPath() == null || contract.unsignedPdfPath().isBlank()) {
+            throw new ApiException(400, "Unsigned PDF not found. Generate PDF first.");
+        }
+
+        Path unsignedPath = Path.of(contract.unsignedPdfPath());
+        if (!Files.exists(unsignedPath)) {
+            throw new ApiException(404, "Unsigned PDF file is missing");
+        }
+
+        byte[] pdfBytes = Files.readAllBytes(unsignedPath);
+
+        KeyPair keyPair = generateKeyPair();
+        X509Certificate cert = generateSelfSignedCert(keyPair, "Floucna-Signing");
+
+        Signature signature = Signature.getInstance("SHA256withRSA");
+        signature.initSign(keyPair.getPrivate());
+        signature.update(pdfBytes);
+        byte[] signatureBytes = signature.sign();
+
+        // Persist as separate signed file (demo-style signature process).
+        Path signedPath = unsignedPath.getParent().resolve("loan_agreement_signed.pdf");
+        Files.copy(unsignedPath, signedPath, StandardCopyOption.REPLACE_EXISTING);
+
+        String pdfHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(pdfBytes));
+
+        upsertContract(loanId, Map.of(
+            "signed_pdf_path", signedPath.toString(),
+            "pdf_hash", pdfHash,
+            "signature_level", "PAdES-B (demo)",
+            "status", "SIGNED",
+            "signed_at", Instant.now().toString()
+        ));
+
+        return getContractByLoanId(loanId);
+    }
+
+    public Map<String, Object> timestampContract(String loanId) throws Exception {
+        ContractRow contract = loadContract(loanId);
+        if (contract.signedPdfPath() == null || contract.signedPdfPath().isBlank()) {
+            throw new ApiException(400, "Signed PDF not found. Sign PDF first.");
+        }
+
+        Path signedPath = Path.of(contract.signedPdfPath());
+        if (!Files.exists(signedPath)) {
+            throw new ApiException(404, "Signed PDF file is missing");
+        }
+
+        Path timestampedPath = signedPath.getParent().resolve("loan_agreement_timestamped.pdf");
+        Files.copy(signedPath, timestampedPath, StandardCopyOption.REPLACE_EXISTING);
+
+        upsertContract(loanId, Map.of(
+            "timestamped_pdf_path", timestampedPath.toString(),
+            "status", "TIMESTAMPED",
+            "timestamped_at", Instant.now().toString()
+        ));
+
+        return getContractByLoanId(loanId);
+    }
+
+    public String getDownloadPathForViewer(String loanId, String viewerUserId, String viewerRole) throws Exception {
+        ContractRow contract = loadContractWithLoan(loanId);
+        boolean isAdmin = "ADMIN".equals(viewerRole);
+        boolean isOwner = contract.borrowerId() != null && contract.borrowerId().equals(viewerUserId);
+        if (!(isAdmin || isOwner)) {
+            throw new ApiException(403, "Forbidden");
+        }
+
+        if (contract.timestampedPdfPath() != null && !contract.timestampedPdfPath().isBlank()) {
+            return contract.timestampedPdfPath();
+        }
+        if (contract.signedPdfPath() != null && !contract.signedPdfPath().isBlank()) {
+            return contract.signedPdfPath();
+        }
+        if (contract.unsignedPdfPath() != null && !contract.unsignedPdfPath().isBlank()) {
+            return contract.unsignedPdfPath();
+        }
+        throw new ApiException(404, "Contract file is not available");
+    }
+
+    public Map<String, Object> getContractForViewer(String loanId, String viewerUserId, String viewerRole) throws Exception {
+        ContractRow contract = loadContractWithLoan(loanId);
+        boolean isAdmin = "ADMIN".equals(viewerRole);
+        boolean isOwner = contract.borrowerId() != null && contract.borrowerId().equals(viewerUserId);
+        if (!(isAdmin || isOwner)) {
+            throw new ApiException(403, "Forbidden");
+        }
+        return rowToMap(contract);
+    }
+
+    public List<Map<String, Object>> listContractsForAdmin() throws Exception {
+        try (Connection conn = Database.connect();
+             PreparedStatement ps = conn.prepareStatement(
+                "SELECT c.*, lr.borrower_id, u.full_name AS borrower_name FROM contracts c " +
+                "JOIN loan_requests lr ON lr.id = c.loan_id " +
+                "JOIN users u ON u.id = lr.borrower_id ORDER BY c.created_at DESC"
+             )) {
+            ResultSet rs = ps.executeQuery();
+            List<Map<String, Object>> out = new ArrayList<>();
+            while (rs.next()) {
+                ContractRow row = new ContractRow(
+                    rs.getString("id"),
+                    rs.getString("loan_id"),
+                    rs.getString("borrower_id"),
+                    rs.getString("unsigned_pdf_path"),
+                    rs.getString("signed_pdf_path"),
+                    rs.getString("timestamped_pdf_path"),
+                    rs.getString("pdf_hash"),
+                    rs.getString("signature_level"),
+                    rs.getString("status"),
+                    rs.getString("verification_result"),
+                    rs.getString("verification_report"),
+                    rs.getString("signed_at"),
+                    rs.getString("timestamped_at"),
+                    rs.getString("verified_at"),
+                    rs.getString("created_at")
+                );
+                Map<String, Object> map = rowToMap(row);
+                map.put("borrowerName", rs.getString("borrower_name"));
+                out.add(map);
+            }
+            return out;
+        }
+    }
+
+    public Map<String, Object> getContractByLoanId(String loanId) throws Exception {
+        return rowToMap(loadContractWithLoan(loanId));
+    }
+
+    private void generatePdf(LoanContext loan, Path output) throws Exception {
         try (PDDocument doc = new PDDocument()) {
             PDPage page = new PDPage(PDRectangle.A4);
             doc.addPage(page);
 
             try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
-                // Header bar
-                cs.setNonStrokingColor(new PDColor(new float[]{0.09f, 0.50f, 0.83f}, PDDeviceRGB.INSTANCE));
-                cs.addRect(0, 780, 595, 62);
-                cs.fill();
+                float y = 760;
+                float line = 18;
 
-                // Title
-                cs.setNonStrokingColor(new PDColor(new float[]{1f, 1f, 1f}, PDDeviceRGB.INSTANCE));
-                cs.beginText();
-                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 20);
-                cs.newLineAtOffset(40, 800);
-                cs.showText("FLOUCNA MINA FINA — LOAN AGREEMENT");
-                cs.endText();
+                writeLine(cs, "FLOUCNA MINA FINA - LOAN AGREEMENT", 50, y, true, 16); y -= 2 * line;
+                writeLine(cs, "Agreement Number: " + loan.loanId(), 50, y, false, 11); y -= line;
+                writeLine(cs, "Date: " + Instant.now().toString().substring(0, 10), 50, y, false, 11); y -= line;
+                writeLine(cs, "Borrower: " + loan.borrowerName() + " (" + loan.borrowerEmail() + ")", 50, y, false, 11); y -= line;
+                writeLine(cs, "Amount: " + loan.amount() + " " + loan.currency(), 50, y, false, 11); y -= line;
+                writeLine(cs, "Duration: " + loan.durationDays() + " days", 50, y, false, 11); y -= line;
+                writeLine(cs, "Purpose: " + loan.purpose(), 50, y, false, 11); y -= line;
+                writeLine(cs, "Demo Score: " + loan.demoScore() + " (" + loan.scoreLabel() + ")", 50, y, false, 11); y -= 2 * line;
 
-                // Body
-                cs.setNonStrokingColor(new PDColor(new float[]{0.1f, 0.1f, 0.1f}, PDDeviceRGB.INSTANCE));
-                float y = 740;
-                float lineH = 20;
+                writeLine(cs, "Borrower Obligations:", 50, y, true, 12); y -= line;
+                writeLine(cs, "1. Repay the amount according to agreed terms.", 60, y, false, 10); y -= line;
+                writeLine(cs, "2. Provide truthful declarations and supporting documentation.", 60, y, false, 10); y -= line;
+                writeLine(cs, "3. Respect legal and compliance obligations.", 60, y, false, 10); y -= 2 * line;
 
-                writeField(cs, "Contract ID:", data.get("loan_id").toString(), 40, y); y -= lineH;
-                writeField(cs, "Date:", Instant.now().toString().substring(0, 10), 40, y); y -= lineH * 1.5f;
-
-                writeSection(cs, "PARTIES", 40, y); y -= lineH;
-                writeField(cs, "Borrower:", data.get("borrower_name").toString(), 40, y); y -= lineH;
-                writeField(cs, "Lender(s):", data.get("lenders").toString(), 40, y); y -= lineH * 1.5f;
-
-                writeSection(cs, "LOAN TERMS", 40, y); y -= lineH;
-                writeField(cs, "Principal Amount:", "TND " + data.get("amount"), 40, y); y -= lineH;
-                writeField(cs, "Duration:", data.get("duration_days") + " days", 40, y); y -= lineH;
-                writeField(cs, "Interest Rate:", data.get("interest_rate") + "%", 40, y); y -= lineH;
-                writeField(cs, "Purpose:", data.get("purpose").toString(), 40, y); y -= lineH * 1.5f;
-
-                writeSection(cs, "LEGAL NOTICE", 40, y); y -= lineH;
-                cs.beginText();
-                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 9);
-                cs.newLineAtOffset(40, y);
-                cs.showText("This agreement is legally binding and digitally signed using PAdES-compliant cryptographic standards.");
-                cs.endText(); y -= lineH;
-                cs.beginText();
-                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 9);
-                cs.newLineAtOffset(40, y);
-                cs.showText("Any modification to this document after signing will invalidate the signature and constitute fraud.");
-                cs.endText(); y -= lineH * 2;
-
-                writeSection(cs, "DIGITAL SIGNATURE", 40, y); y -= lineH;
-                writeField(cs, "Signed by:", "Floucna Platform — Automated Signing Service", 40, y); y -= lineH;
-                writeField(cs, "Algorithm:", "SHA256withRSA + PAdES-B", 40, y);
-
-                // Footer
-                cs.setNonStrokingColor(new PDColor(new float[]{0.95f, 0.26f, 0.0f}, PDDeviceRGB.INSTANCE));
-                cs.addRect(0, 0, 595, 30);
-                cs.fill();
-                cs.setNonStrokingColor(new PDColor(new float[]{1f, 1f, 1f}, PDDeviceRGB.INSTANCE));
-                cs.beginText();
-                cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 8);
-                cs.newLineAtOffset(40, 10);
-                cs.showText("Floucna Mina Fina — Secure P2P Micro-Lending Platform — Powered by SD-DSS & BouncyCastle");
-                cs.endText();
+                writeLine(cs, "Admin Approval Reference: " + loan.loanId(), 50, y, false, 10); y -= line;
+                writeLine(cs, "Signature Section: Generated for digital signing and timestamping.", 50, y, false, 10);
             }
 
-            doc.save(outputPath);
+            doc.save(output.toFile());
         }
     }
 
-    private void writeField(PDPageContentStream cs, String label, String value, float x, float y) throws IOException {
+    private void writeLine(PDPageContentStream cs, String text, float x, float y, boolean bold, int size) throws IOException {
         cs.beginText();
-        cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 10);
+        cs.setFont(new PDType1Font(bold ? Standard14Fonts.FontName.HELVETICA_BOLD : Standard14Fonts.FontName.HELVETICA), size);
         cs.newLineAtOffset(x, y);
-        cs.showText(label + " ");
-        cs.endText();
-        cs.beginText();
-        cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 10);
-        cs.newLineAtOffset(x + 120, y);
-        cs.showText(value != null ? value : "N/A");
+        cs.showText(text);
         cs.endText();
     }
 
-    private void writeSection(PDPageContentStream cs, String title, float x, float y) throws IOException {
-        cs.setNonStrokingColor(new PDColor(new float[]{0.09f, 0.50f, 0.83f}, PDDeviceRGB.INSTANCE));
-        cs.beginText();
-        cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 12);
-        cs.newLineAtOffset(x, y);
-        cs.showText("— " + title);
-        cs.endText();
-        cs.setNonStrokingColor(new PDColor(new float[]{0.1f, 0.1f, 0.1f}, PDDeviceRGB.INSTANCE));
-    }
-
-    private Map<String, Object> fetchLoanData(String loanId) throws Exception {
-        try (Connection conn = Database.connect()) {
-            PreparedStatement ps = conn.prepareStatement(
-                "SELECT l.*, u.full_name as borrower_name FROM loans l JOIN users u ON u.id=l.borrower_id WHERE l.id=?"
-            );
-            ps.setString(1, loanId);
-            ResultSet rs = ps.executeQuery();
-            if (!rs.next()) throw new Exception("Loan not found");
-
-            Map<String, Object> data = new LinkedHashMap<>();
-            data.put("loan_id", loanId);
-            data.put("borrower_name", rs.getString("borrower_name"));
-            data.put("amount", rs.getDouble("amount"));
-            data.put("duration_days", rs.getInt("duration_days"));
-            data.put("interest_rate", rs.getDouble("interest_rate"));
-            data.put("purpose", rs.getString("purpose"));
-
-            // Get lenders
-            PreparedStatement lps = conn.prepareStatement(
-                "SELECT u.full_name, p.amount FROM pledges p JOIN users u ON u.id=p.lender_id WHERE p.loan_id=?"
-            );
-            lps.setString(1, loanId);
-            ResultSet lrs = lps.executeQuery();
-            StringBuilder lenders = new StringBuilder();
-            while (lrs.next()) {
-                if (lenders.length() > 0) lenders.append(", ");
-                lenders.append(lrs.getString("full_name")).append(" (TND ").append(lrs.getDouble("amount")).append(")");
-            }
-            data.put("lenders", lenders.toString());
-            return data;
-        }
-    }
-
-    private KeyPair generateKeyPair() throws Exception {
-        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
-        kpg.initialize(2048);
-        return kpg.generateKeyPair();
-    }
-
-    private X509Certificate generateSelfSignedCert(KeyPair keyPair, String cn) throws Exception {
-        X500Name subject = new X500Name("CN=" + cn + ",O=Floucna,C=DZ");
-        BigInteger serial = BigInteger.valueOf(System.currentTimeMillis());
-        Date notBefore = new Date();
-        Date notAfter = new Date(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000);
-
-        X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
-            subject, serial, notBefore, notAfter, subject, keyPair.getPublic()
-        );
-        ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA").build(keyPair.getPrivate());
-        return new JcaX509CertificateConverter().getCertificate(builder.build(signer));
-    }
-
-    public Map<String, Object> getContract(String loanId) throws Exception {
-        ContractView contractView = fetchContractView(loanId);
-        return toPublicContract(contractView);
-    }
-
-    public Map<String, Object> getContractForViewer(String loanId, String viewerId, String viewerRole) throws Exception {
-        ContractView contractView = fetchContractView(loanId);
-        requireContractAccess(contractView.borrowerId(), viewerId, viewerRole);
-        return toPublicContract(contractView);
-    }
-
-    public String getContractFilePathForViewer(String loanId, String viewerId, String viewerRole) throws Exception {
-        ContractView contractView = fetchContractView(loanId);
-        requireContractAccess(contractView.borrowerId(), viewerId, viewerRole);
-        return contractView.pdfPath();
-    }
-
-    private ContractView fetchContractView(String loanId) throws Exception {
+    private LoanContext loadLoanContext(String loanId) throws Exception {
         try (Connection conn = Database.connect();
              PreparedStatement ps = conn.prepareStatement(
-                "SELECT c.id, c.loan_id, c.pdf_path, c.signed_at, c.tsa_token, c.is_verified, c.verify_report, l.borrower_id " +
-                "FROM contracts c JOIN loans l ON l.id = c.loan_id WHERE c.loan_id=?"
+                 "SELECT lr.id, lr.borrower_id, lr.amount, lr.currency, lr.duration_days, lr.purpose, lr.demo_score, lr.score_label, lr.status, " +
+                 "u.full_name, u.email FROM loan_requests lr JOIN users u ON u.id = lr.borrower_id WHERE lr.id = ?"
+             )) {
+            ps.setString(1, loanId);
+            ResultSet rs = ps.executeQuery();
+            if (!rs.next()) {
+                throw new ApiException(404, "Loan request not found");
+            }
+
+            return new LoanContext(
+                rs.getString("id"),
+                rs.getString("borrower_id"),
+                rs.getString("full_name"),
+                rs.getString("email"),
+                rs.getDouble("amount"),
+                rs.getString("currency"),
+                rs.getInt("duration_days"),
+                rs.getString("purpose"),
+                rs.getInt("demo_score"),
+                rs.getString("score_label"),
+                rs.getString("status")
+            );
+        }
+    }
+
+    private ContractRow loadContract(String loanId) throws Exception {
+        try (Connection conn = Database.connect();
+             PreparedStatement ps = conn.prepareStatement("SELECT * FROM contracts WHERE loan_id=?")) {
+            ps.setString(1, loanId);
+            ResultSet rs = ps.executeQuery();
+            if (!rs.next()) {
+                throw new ApiException(404, "Contract not found. Generate PDF first.");
+            }
+            return new ContractRow(
+                rs.getString("id"),
+                rs.getString("loan_id"),
+                null,
+                rs.getString("unsigned_pdf_path"),
+                rs.getString("signed_pdf_path"),
+                rs.getString("timestamped_pdf_path"),
+                rs.getString("pdf_hash"),
+                rs.getString("signature_level"),
+                rs.getString("status"),
+                rs.getString("verification_result"),
+                rs.getString("verification_report"),
+                rs.getString("signed_at"),
+                rs.getString("timestamped_at"),
+                rs.getString("verified_at"),
+                rs.getString("created_at")
+            );
+        }
+    }
+
+    private ContractRow loadContractWithLoan(String loanId) throws Exception {
+        try (Connection conn = Database.connect();
+             PreparedStatement ps = conn.prepareStatement(
+                 "SELECT c.*, lr.borrower_id FROM contracts c JOIN loan_requests lr ON lr.id = c.loan_id WHERE c.loan_id=?"
              )) {
             ps.setString(1, loanId);
             ResultSet rs = ps.executeQuery();
             if (!rs.next()) {
                 throw new ApiException(404, "Contract not found");
             }
-            return new ContractView(
+            return new ContractRow(
                 rs.getString("id"),
                 rs.getString("loan_id"),
-                rs.getString("pdf_path"),
+                rs.getString("borrower_id"),
+                rs.getString("unsigned_pdf_path"),
+                rs.getString("signed_pdf_path"),
+                rs.getString("timestamped_pdf_path"),
+                rs.getString("pdf_hash"),
+                rs.getString("signature_level"),
+                rs.getString("status"),
+                rs.getString("verification_result"),
+                rs.getString("verification_report"),
                 rs.getString("signed_at"),
-                rs.getString("tsa_token"),
-                rs.getInt("is_verified") == 1,
-                rs.getString("verify_report"),
-                rs.getString("borrower_id")
+                rs.getString("timestamped_at"),
+                rs.getString("verified_at"),
+                rs.getString("created_at")
             );
         }
     }
 
-    private void requireContractAccess(String ownerUserId, String viewerUserId, String viewerRole) {
-        boolean isAdmin = "ADMIN".equals(viewerRole);
-        boolean isOwner = ownerUserId != null && ownerUserId.equals(viewerUserId);
-        if (!(isAdmin || isOwner)) {
-            throw new ApiException(403, "Forbidden");
+    private void upsertContract(String loanId, Map<String, String> updates) throws Exception {
+        try (Connection conn = Database.connect()) {
+            PreparedStatement find = conn.prepareStatement("SELECT id FROM contracts WHERE loan_id=?");
+            find.setString(1, loanId);
+            ResultSet rs = find.executeQuery();
+
+            if (!rs.next()) {
+                PreparedStatement ins = conn.prepareStatement(
+                    "INSERT INTO contracts (id, loan_id, unsigned_pdf_path, signed_pdf_path, timestamped_pdf_path, pdf_hash, signature_level, status, created_at) " +
+                    "VALUES (?,?,?,?,?,?,?,?,?)"
+                );
+                ins.setString(1, UUID.randomUUID().toString());
+                ins.setString(2, loanId);
+                ins.setString(3, updates.get("unsigned_pdf_path"));
+                ins.setString(4, updates.get("signed_pdf_path"));
+                ins.setString(5, updates.get("timestamped_pdf_path"));
+                ins.setString(6, updates.get("pdf_hash"));
+                ins.setString(7, updates.get("signature_level"));
+                ins.setString(8, updates.getOrDefault("status", "PDF_GENERATED"));
+                ins.setString(9, Instant.now().toString());
+                ins.executeUpdate();
+            } else {
+                PreparedStatement upd = conn.prepareStatement(
+                    "UPDATE contracts SET unsigned_pdf_path=COALESCE(?, unsigned_pdf_path), " +
+                    "signed_pdf_path=COALESCE(?, signed_pdf_path), " +
+                    "timestamped_pdf_path=COALESCE(?, timestamped_pdf_path), " +
+                    "pdf_hash=COALESCE(?, pdf_hash), signature_level=COALESCE(?, signature_level), " +
+                    "status=COALESCE(?, status), signed_at=COALESCE(?, signed_at), timestamped_at=COALESCE(?, timestamped_at) " +
+                    "WHERE loan_id=?"
+                );
+                upd.setString(1, updates.get("unsigned_pdf_path"));
+                upd.setString(2, updates.get("signed_pdf_path"));
+                upd.setString(3, updates.get("timestamped_pdf_path"));
+                upd.setString(4, updates.get("pdf_hash"));
+                upd.setString(5, updates.get("signature_level"));
+                upd.setString(6, updates.get("status"));
+                upd.setString(7, updates.get("signed_at"));
+                upd.setString(8, updates.get("timestamped_at"));
+                upd.setString(9, loanId);
+                upd.executeUpdate();
+            }
         }
     }
 
-    private Map<String, Object> toPublicContract(ContractView contractView) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id", contractView.id());
-        m.put("loanId", contractView.loanId());
-        m.put("signedAt", contractView.signedAt());
-        m.put("tsaToken", contractView.tsaToken());
-        m.put("isVerified", contractView.isVerified());
-        m.put("verifyReport", contractView.verifyReport());
-        return m;
+    private Map<String, Object> rowToMap(ContractRow row) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("id", row.id());
+        out.put("loanId", row.loanId());
+        out.put("unsignedPdfPath", row.unsignedPdfPath());
+        out.put("signedPdfPath", row.signedPdfPath());
+        out.put("timestampedPdfPath", row.timestampedPdfPath());
+        out.put("pdfHash", row.pdfHash());
+        out.put("signatureLevel", row.signatureLevel());
+        out.put("status", row.status());
+        out.put("verificationResult", row.verificationResult());
+        out.put("verificationReport", row.verificationReport());
+        out.put("signedAt", row.signedAt());
+        out.put("timestampedAt", row.timestampedAt());
+        out.put("verifiedAt", row.verifiedAt());
+        out.put("createdAt", row.createdAt());
+        if (row.borrowerId() != null) {
+            out.put("borrowerId", row.borrowerId());
+        }
+        return out;
     }
 
-    private record ContractView(
+    private KeyPair generateKeyPair() throws Exception {
+        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("RSA");
+        keyPairGenerator.initialize(2048);
+        return keyPairGenerator.generateKeyPair();
+    }
+
+    private X509Certificate generateSelfSignedCert(KeyPair keyPair, String commonName) throws Exception {
+        X500Name subject = new X500Name("CN=" + commonName + ",O=Floucna,C=TN");
+        BigInteger serial = BigInteger.valueOf(System.currentTimeMillis());
+        Date now = new Date();
+        Date expiry = new Date(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000);
+
+        X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
+            subject,
+            serial,
+            now,
+            expiry,
+            subject,
+            keyPair.getPublic()
+        );
+        ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA").build(keyPair.getPrivate());
+        return new JcaX509CertificateConverter().getCertificate(builder.build(signer));
+    }
+
+    private record LoanContext(
+        String loanId,
+        String borrowerId,
+        String borrowerName,
+        String borrowerEmail,
+        double amount,
+        String currency,
+        int durationDays,
+        String purpose,
+        int demoScore,
+        String scoreLabel,
+        String status
+    ) {}
+
+    private record ContractRow(
         String id,
         String loanId,
-        String pdfPath,
+        String borrowerId,
+        String unsignedPdfPath,
+        String signedPdfPath,
+        String timestampedPdfPath,
+        String pdfHash,
+        String signatureLevel,
+        String status,
+        String verificationResult,
+        String verificationReport,
         String signedAt,
-        String tsaToken,
-        boolean isVerified,
-        String verifyReport,
-        String borrowerId
+        String timestampedAt,
+        String verifiedAt,
+        String createdAt
     ) {}
 }

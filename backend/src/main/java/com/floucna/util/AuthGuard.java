@@ -1,38 +1,36 @@
 package com.floucna.util;
 
-import io.jsonwebtoken.JwtException;
-import io.javalin.http.Context;
+import com.floucna.service.AuthService;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Set;
 
 public final class AuthGuard {
 
-    public record Principal(String userId, String role) {}
+    public record Principal(String userId, String role, String email, String fullName, String providerSubject) {}
+
+    private static final AuthService AUTH = new AuthService();
 
     private AuthGuard() {}
 
-    public static Principal requireAuth(Context ctx) {
+    public static Principal requireAuth(io.javalin.http.Context ctx) {
         String token = extractBearerToken(ctx);
-        try {
-            String userId = JwtUtil.extractUserId(token);
-            String role = JwtUtil.extractRole(token);
-            if (userId == null || userId.isBlank() || role == null || role.isBlank()) {
-                throw new ApiException(401, "Unauthorized");
-            }
-            return new Principal(userId, role);
-        } catch (JwtException e) {
-            throw new ApiException(401, "Invalid or expired token");
-        } catch (ApiException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new ApiException(401, "Unauthorized");
-        }
+        AuthService.ExternalIdentity identity = AUTH.resolveExternalIdentity(token);
+        AuthService.LocalUser localUser = AUTH.syncLocalUser(identity);
+        return new Principal(
+            localUser.id(),
+            normalizeRole(localUser.role()),
+            localUser.email(),
+            localUser.fullName(),
+            identity.providerSubject()
+        );
     }
 
-    public static Principal requireRole(Context ctx, String... allowedRoles) {
+    public static Principal requireRole(io.javalin.http.Context ctx, String... allowedRoles) {
         Principal principal = requireAuth(ctx);
-        Set<String> allowed = new LinkedHashSet<>(Arrays.asList(allowedRoles));
+        Set<String> allowed = new LinkedHashSet<>();
+        Arrays.stream(allowedRoles).map(AuthGuard::normalizeRole).forEach(allowed::add);
         if (!allowed.contains(principal.role())) {
             throw new ApiException(403, "Forbidden");
         }
@@ -48,11 +46,7 @@ public final class AuthGuard {
         }
     }
 
-    public static boolean isAdmin(Principal principal) {
-        return "ADMIN".equals(principal.role());
-    }
-
-    private static String extractBearerToken(Context ctx) {
+    private static String extractBearerToken(io.javalin.http.Context ctx) {
         String authHeader = ctx.header("Authorization");
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
             throw new ApiException(401, "Missing bearer token");
@@ -62,5 +56,12 @@ public final class AuthGuard {
             throw new ApiException(401, "Missing bearer token");
         }
         return token;
+    }
+
+    private static String normalizeRole(String role) {
+        if (role == null) {
+            return "BORROWER";
+        }
+        return role.trim().toUpperCase(Locale.ROOT);
     }
 }

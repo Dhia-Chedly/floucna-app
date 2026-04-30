@@ -1,122 +1,381 @@
 package com.floucna.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.floucna.db.Database;
 import com.floucna.util.ApiException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 public class KycService {
 
-    public void submitKyc(String userId, String idFrontPath, String idBackPath, String selfiePath) throws Exception {
-        try (Connection conn = Database.connect()) {
-            PreparedStatement check = conn.prepareStatement("SELECT id FROM kyc_data WHERE user_id = ?");
-            check.setString(1, userId);
-            ResultSet rs = check.executeQuery();
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final HttpClient HTTP = HttpClient.newHttpClient();
 
-            if (rs.next()) {
-                PreparedStatement upd = conn.prepareStatement(
-                    "UPDATE kyc_data SET id_front_path=?, id_back_path=?, selfie_path=?, status='PENDING', verified_at=NULL WHERE user_id=?"
-                );
-                upd.setString(1, idFrontPath);
-                upd.setString(2, idBackPath);
-                upd.setString(3, selfiePath);
-                upd.setString(4, userId);
-                upd.executeUpdate();
-            } else {
-                PreparedStatement ins = conn.prepareStatement(
-                    "INSERT INTO kyc_data (id, user_id, id_front_path, id_back_path, selfie_path, status) VALUES (?,?,?,?,?,'PENDING')"
-                );
-                ins.setString(1, UUID.randomUUID().toString());
-                ins.setString(2, userId);
-                ins.setString(3, idFrontPath);
-                ins.setString(4, idBackPath);
-                ins.setString(5, selfiePath);
-                ins.executeUpdate();
+    public Map<String, Object> createSession(String userId) throws Exception {
+        String mode = configuredKycMode();
+        boolean fallbackAllowed = isFallbackAllowed();
+
+        if ("DIDIT".equals(mode)) {
+            try {
+                Map<String, Object> didit = createDiditSession(userId);
+                upsertKycRecord(userId, "DIDIT", "SESSION_CREATED", (String) didit.get("sessionId"), null, null, null);
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("mode", "DIDIT");
+                response.put("status", "SESSION_CREATED");
+                response.put("sessionId", didit.get("sessionId"));
+                response.put("verificationUrl", didit.get("verificationUrl"));
+                return response;
+            } catch (Exception e) {
+                if (!fallbackAllowed) {
+                    throw new ApiException(502, "Failed to create Didit session");
+                }
             }
         }
+
+        upsertKycRecord(userId, "LOCAL", "NOT_STARTED", null, null, null, null);
+        return Map.of(
+            "mode", "LOCAL",
+            "status", "NOT_STARTED",
+            "uploadEndpoint", "/api/kyc/local/upload"
+        );
     }
 
     public Map<String, Object> getStatus(String userId) throws Exception {
         try (Connection conn = Database.connect();
-             PreparedStatement ps = conn.prepareStatement("SELECT * FROM kyc_data WHERE user_id = ?")) {
+             PreparedStatement ps = conn.prepareStatement("SELECT * FROM kyc_records WHERE user_id=?")) {
             ps.setString(1, userId);
             ResultSet rs = ps.executeQuery();
-            Map<String, Object> result = new LinkedHashMap<>();
             if (!rs.next()) {
-                result.put("status", "NOT_SUBMITTED");
-                return result;
+                return Map.of("status", "NOT_STARTED", "mode", "LOCAL");
             }
-            result.put("status", rs.getString("status"));
-            result.put("verifiedAt", rs.getString("verified_at"));
-            return result;
+
+            Map<String, Object> status = new LinkedHashMap<>();
+            status.put("id", rs.getString("id"));
+            status.put("mode", rs.getString("mode"));
+            status.put("status", rs.getString("status"));
+            status.put("reviewedAt", rs.getString("reviewed_at"));
+            status.put("updatedAt", rs.getString("updated_at"));
+            return status;
         }
     }
 
-    public void approveKyc(String kycUserId, boolean approve) throws Exception {
+    public void uploadLocalKyc(String userId, String idPhotoPath) throws Exception {
+        upsertKycRecord(userId, "LOCAL", "UNDER_REVIEW", null, null, idPhotoPath, null);
+    }
+
+    public Map<String, Object> handleDiditWebhook(String rawBody, String signatureHeader, String timestampHeader) throws Exception {
+        verifyDiditSignature(rawBody, signatureHeader, timestampHeader);
+
+        Map<String, Object> payload = JSON.readValue(rawBody, new TypeReference<>() {});
+        String sessionId = firstNonBlank(
+            asString(payload.get("sessionId")),
+            asString(payload.get("session_id")),
+            nestedString(payload, "data", "sessionId"),
+            nestedString(payload, "data", "session_id")
+        );
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new ApiException(400, "Didit webhook missing session id");
+        }
+
+        String providerStatus = firstNonBlank(
+            asString(payload.get("status")),
+            nestedString(payload, "data", "status"),
+            "UNKNOWN"
+        );
+
+        String mapped = mapDiditStatus(providerStatus);
+        String providerResultId = firstNonBlank(
+            asString(payload.get("resultId")),
+            asString(payload.get("result_id")),
+            nestedString(payload, "data", "resultId"),
+            nestedString(payload, "data", "result_id")
+        );
+
         try (Connection conn = Database.connect()) {
             conn.setAutoCommit(false);
-            String newStatus = approve ? "VERIFIED" : "REJECTED";
-            String verifiedAt = approve ? Instant.now().toString() : null;
+
+            PreparedStatement find = conn.prepareStatement(
+                "SELECT id FROM kyc_records WHERE provider_session_id=?"
+            );
+            find.setString(1, sessionId);
+            ResultSet rs = find.executeQuery();
+            if (!rs.next()) {
+                throw new ApiException(404, "KYC session not found");
+            }
 
             PreparedStatement upd = conn.prepareStatement(
-                "UPDATE kyc_data SET status=?, verified_at=? WHERE user_id=?"
+                "UPDATE kyc_records SET status=?, provider_result_id=?, updated_at=? WHERE provider_session_id=?"
             );
-            upd.setString(1, newStatus);
-            upd.setString(2, verifiedAt);
-            upd.setString(3, kycUserId);
-            int updatedRows = upd.executeUpdate();
-            if (updatedRows == 0) {
-                throw new ApiException(404, "KYC record not found");
-            }
+            upd.setString(1, mapped);
+            upd.setString(2, providerResultId);
+            upd.setString(3, Instant.now().toString());
+            upd.setString(4, sessionId);
+            upd.executeUpdate();
 
-            PreparedStatement userUpd = conn.prepareStatement(
-                "UPDATE users SET is_verified=? WHERE id=?"
-            );
-            userUpd.setInt(1, approve ? 1 : 0);
-            userUpd.setString(2, kycUserId);
-            userUpd.executeUpdate();
-
-            if (approve) {
-                PreparedStatement scoreCheck = conn.prepareStatement(
-                    "SELECT user_id FROM floucna_scores WHERE user_id=?"
-                );
-                scoreCheck.setString(1, kycUserId);
-                if (!scoreCheck.executeQuery().next()) {
-                    PreparedStatement scoreIns = conn.prepareStatement(
-                        "INSERT INTO floucna_scores (user_id, score, risk_ceiling, last_updated) VALUES (?,0,500.0,?)"
-                    );
-                    scoreIns.setString(1, kycUserId);
-                    scoreIns.setString(2, Instant.now().toString());
-                    scoreIns.executeUpdate();
-                }
-            }
             conn.commit();
         }
+
+        return Map.of("sessionId", sessionId, "status", mapped);
     }
 
-    public List<Map<String, Object>> listPending() throws Exception {
+    public List<Map<String, Object>> listPendingForAdmin() throws Exception {
         try (Connection conn = Database.connect();
              PreparedStatement ps = conn.prepareStatement(
-                "SELECT k.*, u.email, u.full_name FROM kyc_data k JOIN users u ON u.id=k.user_id WHERE k.status='PENDING'"
+                 "SELECT k.id, k.user_id, k.mode, k.status, k.created_at, u.email, u.full_name " +
+                 "FROM kyc_records k JOIN users u ON u.id = k.user_id WHERE k.status='UNDER_REVIEW' ORDER BY k.created_at ASC"
              )) {
             ResultSet rs = ps.executeQuery();
             List<Map<String, Object>> list = new ArrayList<>();
             while (rs.next()) {
                 Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", rs.getString("id"));
                 row.put("userId", rs.getString("user_id"));
+                row.put("mode", rs.getString("mode"));
+                row.put("status", rs.getString("status"));
+                row.put("createdAt", rs.getString("created_at"));
                 row.put("email", rs.getString("email"));
                 row.put("fullName", rs.getString("full_name"));
-                row.put("status", rs.getString("status"));
                 list.add(row);
             }
             return list;
         }
+    }
+
+    public void approve(String kycRecordId, String adminUserId) throws Exception {
+        review(kycRecordId, adminUserId, "VERIFIED");
+    }
+
+    public void reject(String kycRecordId, String adminUserId) throws Exception {
+        review(kycRecordId, adminUserId, "REJECTED");
+    }
+
+    private void review(String kycRecordId, String adminUserId, String targetStatus) throws Exception {
+        try (Connection conn = Database.connect()) {
+            PreparedStatement upd = conn.prepareStatement(
+                "UPDATE kyc_records SET status=?, reviewed_by=?, reviewed_at=?, updated_at=? WHERE id=?"
+            );
+            upd.setString(1, targetStatus);
+            upd.setString(2, adminUserId);
+            upd.setString(3, Instant.now().toString());
+            upd.setString(4, Instant.now().toString());
+            upd.setString(5, kycRecordId);
+            int rows = upd.executeUpdate();
+            if (rows == 0) {
+                throw new ApiException(404, "KYC record not found");
+            }
+        }
+    }
+
+    private Map<String, Object> createDiditSession(String userId) throws Exception {
+        String apiBaseUrl = System.getenv().getOrDefault("FLOUCNA_DIDIT_API_BASE_URL", "https://verification.didit.me");
+        apiBaseUrl = apiBaseUrl.endsWith("/") ? apiBaseUrl.substring(0, apiBaseUrl.length() - 1) : apiBaseUrl;
+        String sessionUrl = apiBaseUrl + "/v3/session/";
+        String apiKey = requiredEnv("FLOUCNA_DIDIT_API_KEY");
+        String workflowId = requiredEnv("FLOUCNA_DIDIT_WORKFLOW_ID");
+        String callbackUrl = System.getenv().getOrDefault("FLOUCNA_DIDIT_CALLBACK_URL", "http://localhost:3000/kyc");
+
+        Map<String, Object> reqBody = new LinkedHashMap<>();
+        reqBody.put("workflow_id", workflowId);
+        reqBody.put("vendor_data", userId);
+        reqBody.put("callback", callbackUrl);
+        reqBody.put("callback_method", "both");
+
+        HttpRequest req = HttpRequest.newBuilder(URI.create(sessionUrl))
+            .header("Content-Type", "application/json")
+            .header("x-api-key", apiKey)
+            .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(reqBody)))
+            .build();
+
+        HttpResponse<String> res = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
+        if (res.statusCode() < 200 || res.statusCode() >= 300) {
+            throw new ApiException(502, "Didit provider returned " + res.statusCode());
+        }
+
+        Map<String, Object> body = JSON.readValue(res.body(), new TypeReference<>() {});
+        String sessionId = firstNonBlank(
+            asString(body.get("sessionId")),
+            asString(body.get("session_id")),
+            nestedString(body, "data", "sessionId"),
+            nestedString(body, "data", "session_id")
+        );
+        String verificationUrl = firstNonBlank(
+            asString(body.get("verificationUrl")),
+            asString(body.get("verification_url")),
+            asString(body.get("url")),
+            nestedString(body, "data", "verificationUrl"),
+            nestedString(body, "data", "verification_url"),
+            nestedString(body, "data", "url")
+        );
+
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new ApiException(502, "Didit response missing session id");
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sessionId", sessionId);
+        result.put("verificationUrl", verificationUrl);
+        return result;
+    }
+
+    private void upsertKycRecord(
+        String userId,
+        String mode,
+        String status,
+        String providerSessionId,
+        String providerResultId,
+        String idPhotoPath,
+        String reviewedBy
+    ) throws Exception {
+        try (Connection conn = Database.connect()) {
+            PreparedStatement find = conn.prepareStatement("SELECT id FROM kyc_records WHERE user_id=?");
+            find.setString(1, userId);
+            ResultSet rs = find.executeQuery();
+
+            if (rs.next()) {
+                PreparedStatement upd = conn.prepareStatement(
+                    "UPDATE kyc_records SET mode=?, status=?, provider_session_id=?, provider_result_id=?, id_photo_path=?, " +
+                    "reviewed_by=?, reviewed_at=NULL, updated_at=? WHERE user_id=?"
+                );
+                upd.setString(1, mode);
+                upd.setString(2, status);
+                upd.setString(3, providerSessionId);
+                upd.setString(4, providerResultId);
+                upd.setString(5, idPhotoPath);
+                upd.setString(6, reviewedBy);
+                upd.setString(7, Instant.now().toString());
+                upd.setString(8, userId);
+                upd.executeUpdate();
+                return;
+            }
+
+            PreparedStatement ins = conn.prepareStatement(
+                "INSERT INTO kyc_records (id, user_id, mode, provider_session_id, provider_result_id, id_photo_path, status, reviewed_by, reviewed_at, created_at, updated_at) " +
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+            );
+            String now = Instant.now().toString();
+            ins.setString(1, UUID.randomUUID().toString());
+            ins.setString(2, userId);
+            ins.setString(3, mode);
+            ins.setString(4, providerSessionId);
+            ins.setString(5, providerResultId);
+            ins.setString(6, idPhotoPath);
+            ins.setString(7, status);
+            ins.setString(8, reviewedBy);
+            ins.setString(9, null);
+            ins.setString(10, now);
+            ins.setString(11, now);
+            ins.executeUpdate();
+        }
+    }
+
+    private void verifyDiditSignature(String rawBody, String signatureHeader, String timestampHeader) throws Exception {
+        String secret = System.getenv("FLOUCNA_DIDIT_WEBHOOK_SECRET");
+        if (secret == null || secret.isBlank()) {
+            throw new ApiException(500, "Didit webhook secret is not configured");
+        }
+        if (signatureHeader == null || signatureHeader.isBlank()) {
+            throw new ApiException(401, "Missing Didit webhook signature");
+        }
+        if (timestampHeader == null || timestampHeader.isBlank()) {
+            throw new ApiException(401, "Missing Didit webhook timestamp");
+        }
+
+        long timestamp;
+        try {
+            timestamp = Long.parseLong(timestampHeader.trim());
+        } catch (NumberFormatException e) {
+            throw new ApiException(401, "Invalid Didit webhook timestamp");
+        }
+
+        long now = Instant.now().getEpochSecond();
+        if (Math.abs(now - timestamp) > ChronoUnit.MINUTES.getDuration().getSeconds() * 5) {
+            throw new ApiException(401, "Stale Didit webhook timestamp");
+        }
+
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        byte[] digest = mac.doFinal(rawBody.getBytes(StandardCharsets.UTF_8));
+        String expected = HexFormat.of().formatHex(digest);
+
+        String normalizedHeader = signatureHeader.trim().toLowerCase(Locale.ROOT);
+        if (normalizedHeader.startsWith("sha256=")) {
+            normalizedHeader = normalizedHeader.substring("sha256=".length());
+        }
+        String normalizedExpected = expected.toLowerCase(Locale.ROOT);
+
+        if (!MessageDigest.isEqual(
+            normalizedExpected.getBytes(StandardCharsets.UTF_8),
+            normalizedHeader.getBytes(StandardCharsets.UTF_8)
+        )) {
+            throw new ApiException(401, "Invalid Didit webhook signature");
+        }
+    }
+
+    private String mapDiditStatus(String providerStatus) {
+        String status = providerStatus == null ? "" : providerStatus.trim().toUpperCase(Locale.ROOT);
+        return switch (status) {
+            case "VERIFIED", "APPROVED", "PASSED", "SUCCESS" -> "VERIFIED";
+            case "REJECTED", "DECLINED", "FAILED" -> "REJECTED";
+            case "EXPIRED" -> "EXPIRED";
+            default -> "UNDER_REVIEW";
+        };
+    }
+
+    private String configuredKycMode() {
+        return System.getenv().getOrDefault("FLOUCNA_KYC_MODE", "LOCAL").trim().toUpperCase(Locale.ROOT);
+    }
+
+    private boolean isFallbackAllowed() {
+        return Boolean.parseBoolean(System.getenv().getOrDefault("FLOUCNA_KYC_ALLOW_FALLBACK", "true"));
+    }
+
+    private String requiredEnv(String key) {
+        String value = System.getenv(key);
+        if (value == null || value.isBlank()) {
+            throw new ApiException(500, "Missing required environment variable: " + key);
+        }
+        return value;
+    }
+
+    private String asString(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    @SuppressWarnings("unchecked")
+    private String nestedString(Map<String, Object> payload, String parentKey, String childKey) {
+        Object parent = payload.get(parentKey);
+        if (parent instanceof Map<?, ?> map) {
+            Object value = ((Map<String, Object>) map).get(childKey);
+            return asString(value);
+        }
+        return null;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 }

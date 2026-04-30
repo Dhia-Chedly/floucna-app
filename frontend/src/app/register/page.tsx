@@ -1,93 +1,73 @@
 'use client';
-import { useState, Suspense } from 'react';
+
 import { useAuth } from '@/lib/auth-context';
-import { useRouter, useSearchParams } from 'next/navigation';
-
-function RegisterForm() {
-  const { register } = useAuth();
-  const router = useRouter();
-  const params = useSearchParams();
-  const [form, setForm] = useState({ email: '', password: '', fullName: '', role: params.get('role') || 'BORROWER' });
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
-    setForm(f => ({ ...f, [k]: e.target.value }));
-
-  const handle = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true); setError('');
-    try {
-      await register(form.email, form.password, form.fullName, form.role);
-      router.replace('/kyc');
-    } catch (err: any) { setError(err.message); }
-    finally { setLoading(false); }
-  };
-
-  return (
-    <form onSubmit={handle} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      {error && <div className="alert alert-error">{error}</div>}
-
-      <div className="form-group">
-        <label className="form-label">I want to</label>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          {(['BORROWER', 'LENDER'] as const).map(r => (
-            <button key={r} type="button" onClick={() => setForm(f => ({ ...f, role: r }))}
-              style={{
-                padding: '14px', borderRadius: 'var(--radius-md)', border: '2px solid',
-                borderColor: form.role === r ? 'var(--orange)' : 'var(--border)',
-                background: form.role === r ? 'rgba(245,166,35,0.1)' : 'var(--surface-2)',
-                color: form.role === r ? 'var(--orange)' : 'var(--text-secondary)',
-                fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s', fontSize: '0.9rem',
-              }}>
-              {r === 'BORROWER' ? '🧑 Borrow Money' : '💰 Lend Money'}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="form-group">
-        <label className="form-label">Full Name</label>
-        <input id="reg-name" className="input" placeholder="Ahmed Benali" value={form.fullName} onChange={set('fullName')} required />
-      </div>
-      <div className="form-group">
-        <label className="form-label">Email Address</label>
-        <input id="reg-email" className="input" type="email" placeholder="you@example.com" value={form.email} onChange={set('email')} required />
-      </div>
-      <div className="form-group">
-        <label className="form-label">Password</label>
-        <input id="reg-password" className="input" type="password" placeholder="Min. 8 characters" value={form.password} onChange={set('password')} minLength={8} required />
-      </div>
-
-      <button id="reg-submit" className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading}>
-        {loading ? <span className="spinner" /> : 'Create Account'}
-      </button>
-    </form>
-  );
-}
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
 
 export default function RegisterPage() {
+  const { user, loading: authLoading, authMode, register } = useAuth();
   const router = useRouter();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!authLoading && user) {
+      router.replace('/dashboard');
+    }
+  }, [authLoading, user, router]);
+
+  if (authMode !== 'KEYCLOAK') {
+    return (
+      <div className="flex-center page" style={{ minHeight: '100vh' }}>
+        <div className="card" style={{ width: '100%', maxWidth: 460 }}>
+          <h2 style={{ marginBottom: 8 }}>Registration Unavailable</h2>
+          <p style={{ marginBottom: 18 }}>
+            Self-signup is available only in KEYCLOAK mode.
+          </p>
+          <button className="btn btn-primary btn-full" onClick={() => router.push('/login')}>
+            Back to Login
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-center page" style={{ minHeight: '100vh' }}>
-      <div style={{ position: 'absolute', inset: 0 }}>
-        <div className="orb orb-orange" style={{ top: '10%', left: '5%', opacity: 0.1 }} />
-        <div className="orb orb-blue"   style={{ bottom: '10%', right: '5%', opacity: 0.1 }} />
-      </div>
-      <div className="card anim-scale-in" style={{ width: '100%', maxWidth: 460, position: 'relative', zIndex: 1 }}>
-        <div style={{ textAlign: 'center', marginBottom: 28 }}>
+      <div className="card anim-scale-in" style={{ width: '100%', maxWidth: 460 }}>
+        <div style={{ textAlign: 'center', marginBottom: 22 }}>
           <img src="/logo.jpeg" alt="Floucna" style={{ width: 60, height: 60, borderRadius: 16, marginBottom: 14, objectFit: 'cover' }} />
-          <h2 style={{ marginBottom: 6 }}>Join Floucna</h2>
-          <p style={{ fontSize: '0.9rem' }}>Create your secure account in seconds</p>
+          <h2 style={{ marginBottom: 6 }}>Create Borrower Account</h2>
+          <p style={{ fontSize: '0.9rem' }}>
+            Continue to Keycloak registration, then you will return to your dashboard.
+          </p>
         </div>
-        <Suspense>
-          <RegisterForm />
-        </Suspense>
-        <div className="divider" />
-        <p style={{ textAlign: 'center', fontSize: '0.9rem' }}>
-          Already have an account?{' '}
-          <button className="btn btn-ghost btn-sm" onClick={() => router.push('/login')}>Sign in →</button>
-        </p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <button
+            className="btn btn-primary btn-full btn-lg"
+            disabled={loading}
+            onClick={async () => {
+              setError('');
+              setLoading(true);
+              try {
+                await register();
+              } catch (err: any) {
+                setError(err.message || 'Registration redirect failed');
+                setLoading(false);
+              }
+            }}
+          >
+            {loading ? <span className="spinner" /> : 'Register with Keycloak'}
+          </button>
+
+          <button className="btn btn-ghost btn-full" disabled={loading} onClick={() => router.push('/login')}>
+            Back to Login
+          </button>
+        </div>
+
+        {error && <div className="alert alert-error" style={{ marginTop: 14 }}>{error}</div>}
       </div>
     </div>
   );
