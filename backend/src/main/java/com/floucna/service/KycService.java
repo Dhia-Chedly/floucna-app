@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -82,10 +83,16 @@ public class KycService {
         upsertKycRecord(userId, "LOCAL", "UNDER_REVIEW", null, null, idPhotoPath, null);
     }
 
-    public Map<String, Object> handleDiditWebhook(String rawBody, String signatureHeader, String timestampHeader) throws Exception {
-        verifyDiditSignature(rawBody, signatureHeader, timestampHeader);
-
+    public Map<String, Object> handleDiditWebhook(
+        String rawBody,
+        String signatureHeader,
+        String signatureV2Header,
+        String signatureSimpleHeader,
+        String timestampHeader
+    ) throws Exception {
         Map<String, Object> payload = JSON.readValue(rawBody, new TypeReference<>() {});
+        verifyDiditSignature(rawBody, payload, signatureHeader, signatureV2Header, signatureSimpleHeader, timestampHeader);
+
         String sessionId = firstNonBlank(
             asString(payload.get("sessionId")),
             asString(payload.get("session_id")),
@@ -287,13 +294,17 @@ public class KycService {
         }
     }
 
-    private void verifyDiditSignature(String rawBody, String signatureHeader, String timestampHeader) throws Exception {
+    private void verifyDiditSignature(
+        String rawBody,
+        Map<String, Object> payload,
+        String signatureHeader,
+        String signatureV2Header,
+        String signatureSimpleHeader,
+        String timestampHeader
+    ) throws Exception {
         String secret = System.getenv("FLOUCNA_DIDIT_WEBHOOK_SECRET");
         if (secret == null || secret.isBlank()) {
             throw new ApiException(500, "Didit webhook secret is not configured");
-        }
-        if (signatureHeader == null || signatureHeader.isBlank()) {
-            throw new ApiException(401, "Missing Didit webhook signature");
         }
         if (timestampHeader == null || timestampHeader.isBlank()) {
             throw new ApiException(401, "Missing Didit webhook timestamp");
@@ -311,23 +322,120 @@ public class KycService {
             throw new ApiException(401, "Stale Didit webhook timestamp");
         }
 
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-        byte[] digest = mac.doFinal(rawBody.getBytes(StandardCharsets.UTF_8));
-        String expected = HexFormat.of().formatHex(digest);
+        String rawSignature = normalizeSignature(signatureHeader);
+        String v2Signature = normalizeSignature(signatureV2Header);
+        String simpleSignature = normalizeSignature(signatureSimpleHeader);
 
-        String normalizedHeader = signatureHeader.trim().toLowerCase(Locale.ROOT);
-        if (normalizedHeader.startsWith("sha256=")) {
-            normalizedHeader = normalizedHeader.substring("sha256=".length());
+        if ((rawSignature == null || rawSignature.isBlank())
+            && (v2Signature == null || v2Signature.isBlank())
+            && (simpleSignature == null || simpleSignature.isBlank())) {
+            throw new ApiException(401, "Missing Didit webhook signature");
         }
-        String normalizedExpected = expected.toLowerCase(Locale.ROOT);
 
-        if (!MessageDigest.isEqual(
-            normalizedExpected.getBytes(StandardCharsets.UTF_8),
-            normalizedHeader.getBytes(StandardCharsets.UTF_8)
-        )) {
+        boolean verified = false;
+        if (v2Signature != null && !v2Signature.isBlank()) {
+            verified = verifyDiditSignatureV2(payload, v2Signature, secret);
+        }
+        if (!verified && simpleSignature != null && !simpleSignature.isBlank()) {
+            verified = verifyDiditSignatureSimple(payload, simpleSignature, secret);
+        }
+        if (!verified && rawSignature != null && !rawSignature.isBlank()) {
+            verified = verifyDiditSignatureRaw(rawBody, rawSignature, secret);
+        }
+
+        if (!verified) {
             throw new ApiException(401, "Invalid Didit webhook signature");
         }
+    }
+
+    private boolean verifyDiditSignatureRaw(String rawBody, String signatureHeader, String secret) throws Exception {
+        String expected = hmacSha256Hex(rawBody, secret);
+        return signaturesEqual(expected, signatureHeader);
+    }
+
+    private boolean verifyDiditSignatureV2(Map<String, Object> payload, String signatureHeader, String secret) throws Exception {
+        Object normalized = normalizeDiditPayload(payload);
+        String canonicalJson = JSON.writeValueAsString(normalized);
+        String expected = hmacSha256Hex(canonicalJson, secret);
+        return signaturesEqual(expected, signatureHeader);
+    }
+
+    private boolean verifyDiditSignatureSimple(Map<String, Object> payload, String signatureHeader, String secret) throws Exception {
+        String canonicalString = String.join(
+            ":",
+            stringOrEmpty(payload.get("timestamp")),
+            stringOrEmpty(payload.get("session_id")),
+            stringOrEmpty(payload.get("status")),
+            stringOrEmpty(payload.get("webhook_type"))
+        );
+        String expected = hmacSha256Hex(canonicalString, secret);
+        return signaturesEqual(expected, signatureHeader);
+    }
+
+    private String hmacSha256Hex(String input, String secret) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        byte[] digest = mac.doFinal(input.getBytes(StandardCharsets.UTF_8));
+        return HexFormat.of().formatHex(digest);
+    }
+
+    private boolean signaturesEqual(String expected, String provided) {
+        String normalizedExpected = normalizeSignature(expected);
+        String normalizedProvided = normalizeSignature(provided);
+        if (normalizedExpected == null || normalizedProvided == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+            normalizedExpected.getBytes(StandardCharsets.UTF_8),
+            normalizedProvided.getBytes(StandardCharsets.UTF_8)
+        );
+    }
+
+    private String normalizeSignature(String signature) {
+        if (signature == null) {
+            return null;
+        }
+        String normalized = signature.trim().toLowerCase(Locale.ROOT);
+        if (normalized.startsWith("sha256=")) {
+            normalized = normalized.substring("sha256=".length());
+        }
+        return normalized;
+    }
+
+    private String stringOrEmpty(Object value) {
+        String text = asString(value);
+        return text == null ? "" : text;
+    }
+
+    private Object normalizeDiditPayload(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> normalized = new TreeMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                String key = String.valueOf(entry.getKey());
+                normalized.put(key, normalizeDiditPayload(entry.getValue()));
+            }
+            return normalized;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> normalized = new ArrayList<>(list.size());
+            for (Object item : list) {
+                normalized.add(normalizeDiditPayload(item));
+            }
+            return normalized;
+        }
+        if (value instanceof Double d && Double.isFinite(d) && d == Math.rint(d)) {
+            long cast = (long) d.doubleValue();
+            if ((double) cast == d) {
+                return cast;
+            }
+        }
+        if (value instanceof Float f && Float.isFinite(f) && f == Math.rint(f)) {
+            long cast = (long) f.floatValue();
+            if ((float) cast == f) {
+                return cast;
+            }
+        }
+        return value;
     }
 
     private String mapDiditStatus(String providerStatus) {

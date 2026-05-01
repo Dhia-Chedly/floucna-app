@@ -164,11 +164,18 @@ public class KycController {
     private static void handleDiditWebhook(io.javalin.http.Context ctx) throws Exception {
         String signature = firstNonBlank(
             ctx.header("X-Signature"),
-            ctx.header("X-Didit-Signature"),
-            ctx.header("X-Signature-V2")
+            ctx.header("X-Didit-Signature")
         );
+        String signatureV2 = ctx.header("X-Signature-V2");
+        String signatureSimple = ctx.header("X-Signature-Simple");
         String timestamp = ctx.header("X-Timestamp");
-        Map<String, Object> result = KYC.handleDiditWebhook(ctx.body(), signature, timestamp);
+        Map<String, Object> result = KYC.handleDiditWebhook(
+            ctx.body(),
+            signature,
+            signatureV2,
+            signatureSimple,
+            timestamp
+        );
         AuditLogger.log(null, "KYC_WEBHOOK_RECEIVED", "KYC", String.valueOf(result.get("sessionId")), "OK");
         ctx.json(result);
     }
