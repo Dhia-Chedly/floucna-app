@@ -9,7 +9,9 @@ export default function DashboardPage() {
   const { user, loading } = useAuth();
   const router = useRouter();
   const [loans, setLoans] = useState<any[]>([]);
+  const [contracts, setContracts] = useState<Record<string, any>>({});
   const [loadingLoans, setLoadingLoans] = useState(true);
+  const [downloading, setDownloading] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!loading && !user) {
@@ -20,13 +22,47 @@ export default function DashboardPage() {
     if (user?.role === 'BORROWER') {
       api
         .myLoans()
-        .then(setLoans)
+        .then(async (myLoans: any[]) => {
+          setLoans(myLoans);
+          // Fetch contract metadata for loans that are past APPROVED
+          const contractStatuses: Record<string, any> = {};
+          await Promise.all(
+            myLoans
+              .filter(l => ['APPROVED', 'PDF_GENERATED', 'SIGNED', 'TIMESTAMPED', 'VERIFIED'].includes(l.status))
+              .map(async l => {
+                try {
+                  const c = await api.contractMeta(l.id);
+                  contractStatuses[l.id] = c;
+                } catch {
+                  // contract not yet generated
+                }
+              })
+          );
+          setContracts(contractStatuses);
+        })
         .catch(() => setLoans([]))
         .finally(() => setLoadingLoans(false));
     } else {
       setLoadingLoans(false);
     }
   }, [user, loading, router]);
+
+  const downloadContract = async (loanId: string) => {
+    setDownloading(prev => ({ ...prev, [loanId]: true }));
+    try {
+      const blob = await api.downloadContract(loanId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `loan_agreement_${loanId.slice(0, 8)}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert(e.message || 'Download failed');
+    } finally {
+      setDownloading(prev => ({ ...prev, [loanId]: false }));
+    }
+  };
 
   if (loading || !user) return null;
 
@@ -128,25 +164,48 @@ export default function DashboardPage() {
                         <th>Duration</th>
                         <th>Score</th>
                         <th>Status</th>
+                        <th>Contract</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {loans.map(loan => (
-                        <tr key={loan.id}>
-                          <td style={{ fontWeight: 600 }}>
-                            {loan.currency} {Number(loan.amount).toLocaleString()}
-                          </td>
-                          <td>{loan.duration_days} days</td>
-                          <td>
-                            {loan.demo_score} <span style={{ color: 'var(--text-muted)' }}>({loan.score_label})</span>
-                          </td>
-                          <td>
-                            <span className={`badge ${loan.status === 'APPROVED' ? 'badge-green' : loan.status === 'REJECTED' ? 'badge-red' : 'badge-amber'}`}>
-                              {loan.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
+                      {loans.map(loan => {
+                        const contract = contracts[loan.id];
+                        const contractStatus = contract?.status;
+                        const canDownload = contractStatus && ['PDF_GENERATED', 'SIGNED', 'TIMESTAMPED', 'VERIFIED'].includes(contractStatus);
+                        return (
+                          <tr key={loan.id}>
+                            <td style={{ fontWeight: 600 }}>
+                              {loan.currency} {Number(loan.amount).toLocaleString()}
+                            </td>
+                            <td>{loan.duration_days} days</td>
+                            <td>
+                              {loan.demo_score} <span style={{ color: 'var(--text-muted)' }}>({loan.score_label})</span>
+                            </td>
+                            <td>
+                              <span className={`badge ${loan.status === 'APPROVED' || ['PDF_GENERATED','SIGNED','TIMESTAMPED','VERIFIED'].includes(loan.status) ? 'badge-green' : loan.status === 'REJECTED' ? 'badge-red' : 'badge-amber'}`}>
+                                {loan.status}
+                              </span>
+                            </td>
+                            <td>
+                              {canDownload ? (
+                                <button
+                                  className="btn btn-sm"
+                                  style={{ background: 'rgba(34,197,94,0.15)', color: '#22C55E', display: 'flex', alignItems: 'center', gap: 5 }}
+                                  disabled={!!downloading[loan.id]}
+                                  onClick={() => downloadContract(loan.id)}
+                                >
+                                  {downloading[loan.id] ? <span className="spinner" /> : null}
+                                  ⬇ {contractStatus === 'TIMESTAMPED' || contractStatus === 'VERIFIED' ? 'Signed PDF' : 'Download'}
+                                </button>
+                              ) : contractStatus ? (
+                                <span className="badge badge-amber" style={{ fontSize: '0.72rem' }}>{contractStatus}</span>
+                              ) : (
+                                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Pending</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

@@ -27,7 +27,7 @@ RUN addgroup --system floucna && adduser --system --ingroup floucna floucna
 COPY --from=builder /app/target/backend-1.0-SNAPSHOT.jar app.jar
 
 # Persistent directories (mounted as volumes)
-RUN mkdir -p contracts uploads data && chown -R floucna:floucna /app
+RUN mkdir -p contracts uploads data storage && chown -R floucna:floucna /app
 
 USER floucna
 

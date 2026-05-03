@@ -83,7 +83,7 @@ services:
       - FLOUCNA_DIDIT_CALLBACK_URL=${FLOUCNA_DIDIT_CALLBACK_URL:-http://localhost:3000/kyc}
 
       # Enhanced schema reset on startup
-      - FLOUCNA_SCHEMA_RESET=true
+      - FLOUCNA_SCHEMA_RESET=false
     networks:
       - floucna-net
     depends_on:

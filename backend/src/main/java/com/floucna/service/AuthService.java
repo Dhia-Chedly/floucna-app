@@ -63,16 +63,24 @@ public class AuthService {
             if (rs.next()) {
                 String userId = rs.getString("id");
                 String currentRole = rs.getString("role");
+                String currentEmail = rs.getString("email");
+                String currentFullName = rs.getString("full_name");
                 String role = "ADMIN".equals(tokenRole) ? "ADMIN" : currentRole;
 
-                PreparedStatement upd = conn.prepareStatement(
-                    "UPDATE users SET email=?, full_name=?, role=? WHERE id=?"
-                );
-                upd.setString(1, email);
-                upd.setString(2, fullName);
-                upd.setString(3, role);
-                upd.setString(4, userId);
-                upd.executeUpdate();
+                boolean changed = !email.equals(currentEmail) || 
+                                  !fullName.equals(currentFullName) || 
+                                  !role.equals(currentRole);
+
+                if (changed) {
+                    PreparedStatement upd = conn.prepareStatement(
+                        "UPDATE users SET email=?, full_name=?, role=? WHERE id=?"
+                    );
+                    upd.setString(1, email);
+                    upd.setString(2, fullName);
+                    upd.setString(3, role);
+                    upd.setString(4, userId);
+                    upd.executeUpdate();
+                }
 
                 return new LocalUser(userId, role, email, fullName);
             }
@@ -91,6 +99,7 @@ public class AuthService {
 
             return new LocalUser(userId, tokenRole, email, fullName);
         } catch (Exception e) {
+            e.printStackTrace();
             throw new ApiException(500, "Failed to sync user profile");
         }
     }
