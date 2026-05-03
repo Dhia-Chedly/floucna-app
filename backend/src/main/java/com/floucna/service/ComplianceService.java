@@ -38,7 +38,7 @@ public class ComplianceService {
         boolean timestampPresent = contract.timestampedPdfPath() != null && !contract.timestampedPdfPath().isBlank();
         String certificateStatus = "SELF_SIGNED";
 
-        boolean overallPass = signaturePresent && signatureValid && integrityUnchanged;
+        boolean overallPass = signaturePresent && signatureValid && integrityUnchanged && timestampPresent;
         String result = overallPass ? "PASS" : "FAIL";
 
         Map<String, Object> report = new LinkedHashMap<>();
@@ -109,15 +109,16 @@ public class ComplianceService {
     }
 
     private void persistVerificationResult(String loanId, String result, String report, boolean pass) throws Exception {
+        String sql = pass 
+            ? "UPDATE contracts SET verification_result=?, verification_report=?, verified_at=?, status='VERIFIED' WHERE loan_id=?"
+            : "UPDATE contracts SET verification_result=?, verification_report=?, verified_at=? WHERE loan_id=?";
+            
         try (Connection conn = Database.connect();
-             PreparedStatement ps = conn.prepareStatement(
-                "UPDATE contracts SET verification_result=?, verification_report=?, verified_at=?, status=? WHERE loan_id=?"
-             )) {
+             PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, result);
             ps.setString(2, report);
             ps.setString(3, Instant.now().toString());
-            ps.setString(4, pass ? "VERIFIED" : "TIMESTAMPED");
-            ps.setString(5, loanId);
+            ps.setString(4, loanId);
             int rows = ps.executeUpdate();
             if (rows == 0) {
                 throw new ApiException(404, "Contract not found for verification");
