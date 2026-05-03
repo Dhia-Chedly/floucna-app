@@ -44,22 +44,25 @@ public class KycController {
         app.post("/api/kyc/local/upload", ctx -> {
             try {
                 AuthGuard.Principal principal = AuthGuard.requireRole(ctx, "BORROWER");
-                UploadedFile idPhoto = ctx.uploadedFile("idPhoto");
-                if (idPhoto == null) {
-                    throw new IllegalArgumentException("idPhoto is required");
+                UploadedFile idFront = ctx.uploadedFile("idFront");
+                UploadedFile idBack = ctx.uploadedFile("idBack");
+                UploadedFile face = ctx.uploadedFile("face");
+                if (idFront == null || idBack == null || face == null) {
+                    throw new IllegalArgumentException("idFront, idBack and face are all required");
                 }
 
-                validateFile(idPhoto);
+                validateFile(idFront);
+                validateFile(idBack);
+                validateFile(face);
+
                 Path uploadDir = resolveUserUploadDir(principal.userId());
                 Files.createDirectories(uploadDir);
 
-                String ext = extensionFromContentType(idPhoto.contentType());
-                Path dest = uploadDir.resolve("id_photo" + ext);
-                try (InputStream in = idPhoto.content()) {
-                    Files.copy(in, dest, StandardCopyOption.REPLACE_EXISTING);
-                }
+                String idFrontPath = saveUpload(idFront, uploadDir, "id_front");
+                String idBackPath = saveUpload(idBack, uploadDir, "id_back");
+                String facePath = saveUpload(face, uploadDir, "face");
 
-                KYC.uploadLocalKyc(principal.userId(), dest.toString());
+                KYC.uploadLocalKyc(principal.userId(), idFrontPath, idBackPath, facePath);
                 AuditLogger.log(principal.userId(), "KYC_LOCAL_UPLOAD", "KYC", principal.userId(), "UNDER_REVIEW");
                 ctx.status(201).json(Map.of("message", "Local KYC uploaded", "status", "UNDER_REVIEW"));
             } catch (Exception e) {
@@ -139,6 +142,15 @@ public class KycController {
         if (type == null || !ALLOWED_CONTENT_TYPES.contains(type.toLowerCase(Locale.ROOT))) {
             throw new IllegalArgumentException("Unsupported file type");
         }
+    }
+
+    private static String saveUpload(UploadedFile file, Path uploadDir, String baseName) throws java.io.IOException {
+        String ext = extensionFromContentType(file.contentType());
+        Path dest = uploadDir.resolve(baseName + ext);
+        try (InputStream in = file.content()) {
+            Files.copy(in, dest, StandardCopyOption.REPLACE_EXISTING);
+        }
+        return dest.toString();
     }
 
     private static String extensionFromContentType(String contentType) {

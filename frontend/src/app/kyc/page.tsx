@@ -13,7 +13,9 @@ export default function KycPage() {
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [uploadMode, setUploadMode] = useState(false);
-  const [idPhoto, setIdPhoto] = useState<File | null>(null);
+  const [idFront, setIdFront] = useState<File | null>(null);
+  const [idBack, setIdBack] = useState<File | null>(null);
+  const [face, setFace] = useState<File | null>(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
@@ -50,7 +52,11 @@ export default function KycPage() {
         setUploadMode(false);
       } else {
         setUploadMode(true);
-        setMessage('Local fallback mode enabled. Upload your ID photo for admin review.');
+        if (session.fallback) {
+          setMessage('Didit is currently unreachable. Please complete local KYC by uploading your ID (front and back) and a face picture for admin review.');
+        } else {
+          setMessage('Local KYC mode. Upload your ID (front and back) and a face picture for admin review.');
+        }
       }
     } catch (err: any) {
       setError(err.message || 'Failed to start KYC session');
@@ -60,8 +66,8 @@ export default function KycPage() {
   };
 
   const submitLocal = async () => {
-    if (!idPhoto) {
-      setError('Please choose an ID photo.');
+    if (!idFront || !idBack || !face) {
+      setError('Please upload the ID front, ID back, and a face picture.');
       return;
     }
 
@@ -70,10 +76,15 @@ export default function KycPage() {
 
     try {
       const form = new FormData();
-      form.append('idPhoto', idPhoto);
+      form.append('idFront', idFront);
+      form.append('idBack', idBack);
+      form.append('face', face);
       await api.kycLocalUpload(form);
-      setMessage('ID uploaded successfully. Your KYC is now under admin review.');
+      setMessage('Documents uploaded successfully. Your KYC is now under admin review.');
       setUploadMode(false);
+      setIdFront(null);
+      setIdBack(null);
+      setFace(null);
       await loadStatus();
     } catch (err: any) {
       setError(err.message || 'Upload failed');
@@ -134,13 +145,21 @@ export default function KycPage() {
           <div className="card">
             <h3 style={{ marginBottom: 10 }}>Local Fallback Upload</h3>
             <p style={{ fontSize: '0.9rem', marginBottom: 14 }}>
-              Upload a clear image of your ID card. An admin will review and approve/reject manually.
+              Upload clear images of your ID (front and back) and a face picture. An admin will review and approve/reject manually.
             </p>
             <div className="form-group" style={{ marginBottom: 14 }}>
-              <label className="form-label">ID Photo</label>
-              <input className="input" type="file" accept="image/*" onChange={e => setIdPhoto(e.target.files?.[0] || null)} />
+              <label className="form-label">ID Front</label>
+              <input className="input" type="file" accept="image/*" onChange={e => setIdFront(e.target.files?.[0] || null)} />
             </div>
-            <button className="btn btn-primary" onClick={submitLocal} disabled={!idPhoto}>
+            <div className="form-group" style={{ marginBottom: 14 }}>
+              <label className="form-label">ID Back</label>
+              <input className="input" type="file" accept="image/*" onChange={e => setIdBack(e.target.files?.[0] || null)} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 14 }}>
+              <label className="form-label">Face Picture</label>
+              <input className="input" type="file" accept="image/*" onChange={e => setFace(e.target.files?.[0] || null)} />
+            </div>
+            <button className="btn btn-primary" onClick={submitLocal} disabled={!idFront || !idBack || !face}>
               Submit Local KYC
             </button>
           </div>

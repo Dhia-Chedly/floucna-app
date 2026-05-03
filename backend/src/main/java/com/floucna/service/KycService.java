@@ -35,10 +35,13 @@ public class KycService {
         String mode = configuredKycMode();
         boolean fallbackAllowed = isFallbackAllowed();
 
+        boolean fallbackTriggered = false;
+        String fallbackReason = null;
+
         if ("DIDIT".equals(mode)) {
             try {
                 Map<String, Object> didit = createDiditSession(userId);
-                upsertKycRecord(userId, "DIDIT", "SESSION_CREATED", (String) didit.get("sessionId"), null, null, null);
+                upsertKycRecord(userId, "DIDIT", "SESSION_CREATED", (String) didit.get("sessionId"), null, null, null, null, null);
                 Map<String, Object> response = new LinkedHashMap<>();
                 response.put("mode", "DIDIT");
                 response.put("status", "SESSION_CREATED");
@@ -49,15 +52,22 @@ public class KycService {
                 if (!fallbackAllowed) {
                     throw new ApiException(502, "Failed to create Didit session");
                 }
+                fallbackTriggered = true;
+                fallbackReason = "Didit unreachable, falling back to local KYC";
             }
         }
 
-        upsertKycRecord(userId, "LOCAL", "NOT_STARTED", null, null, null, null);
-        return Map.of(
-            "mode", "LOCAL",
-            "status", "NOT_STARTED",
-            "uploadEndpoint", "/api/kyc/local/upload"
-        );
+        upsertKycRecord(userId, "LOCAL", "NOT_STARTED", null, null, null, null, null, null);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("mode", "LOCAL");
+        response.put("status", "NOT_STARTED");
+        response.put("uploadEndpoint", "/api/kyc/local/upload");
+        response.put("requiredFields", List.of("idFront", "idBack", "face"));
+        if (fallbackTriggered) {
+            response.put("fallback", true);
+            response.put("reason", fallbackReason);
+        }
+        return response;
     }
 
     public Map<String, Object> getStatus(String userId) throws Exception {
@@ -79,8 +89,8 @@ public class KycService {
         }
     }
 
-    public void uploadLocalKyc(String userId, String idPhotoPath) throws Exception {
-        upsertKycRecord(userId, "LOCAL", "UNDER_REVIEW", null, null, idPhotoPath, null);
+    public void uploadLocalKyc(String userId, String idFrontPath, String idBackPath, String facePath) throws Exception {
+        upsertKycRecord(userId, "LOCAL", "UNDER_REVIEW", null, null, idFrontPath, idBackPath, facePath, null);
     }
 
     public Map<String, Object> handleDiditWebhook(
@@ -249,7 +259,9 @@ public class KycService {
         String status,
         String providerSessionId,
         String providerResultId,
-        String idPhotoPath,
+        String idFrontPath,
+        String idBackPath,
+        String facePath,
         String reviewedBy
     ) throws Exception {
         try (Connection conn = Database.connect()) {
@@ -259,24 +271,27 @@ public class KycService {
 
             if (rs.next()) {
                 PreparedStatement upd = conn.prepareStatement(
-                    "UPDATE kyc_records SET mode=?, status=?, provider_session_id=?, provider_result_id=?, id_photo_path=?, " +
-                    "reviewed_by=?, reviewed_at=NULL, updated_at=? WHERE user_id=?"
+                    "UPDATE kyc_records SET mode=?, status=?, provider_session_id=?, provider_result_id=?, " +
+                    "id_front_path=?, id_back_path=?, face_path=?, reviewed_by=?, reviewed_at=NULL, updated_at=? WHERE user_id=?"
                 );
                 upd.setString(1, mode);
                 upd.setString(2, status);
                 upd.setString(3, providerSessionId);
                 upd.setString(4, providerResultId);
-                upd.setString(5, idPhotoPath);
-                upd.setString(6, reviewedBy);
-                upd.setString(7, Instant.now().toString());
-                upd.setString(8, userId);
+                upd.setString(5, idFrontPath);
+                upd.setString(6, idBackPath);
+                upd.setString(7, facePath);
+                upd.setString(8, reviewedBy);
+                upd.setString(9, Instant.now().toString());
+                upd.setString(10, userId);
                 upd.executeUpdate();
                 return;
             }
 
             PreparedStatement ins = conn.prepareStatement(
-                "INSERT INTO kyc_records (id, user_id, mode, provider_session_id, provider_result_id, id_photo_path, status, reviewed_by, reviewed_at, created_at, updated_at) " +
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+                "INSERT INTO kyc_records (id, user_id, mode, provider_session_id, provider_result_id, " +
+                "id_front_path, id_back_path, face_path, status, reviewed_by, reviewed_at, created_at, updated_at) " +
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
             );
             String now = Instant.now().toString();
             ins.setString(1, UUID.randomUUID().toString());
@@ -284,12 +299,14 @@ public class KycService {
             ins.setString(3, mode);
             ins.setString(4, providerSessionId);
             ins.setString(5, providerResultId);
-            ins.setString(6, idPhotoPath);
-            ins.setString(7, status);
-            ins.setString(8, reviewedBy);
-            ins.setString(9, null);
-            ins.setString(10, now);
-            ins.setString(11, now);
+            ins.setString(6, idFrontPath);
+            ins.setString(7, idBackPath);
+            ins.setString(8, facePath);
+            ins.setString(9, status);
+            ins.setString(10, reviewedBy);
+            ins.setString(11, null);
+            ins.setString(12, now);
+            ins.setString(13, now);
             ins.executeUpdate();
         }
     }
