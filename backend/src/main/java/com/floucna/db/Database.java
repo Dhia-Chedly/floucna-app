@@ -24,6 +24,7 @@ public class Database {
             }
 
             createSchema(stmt);
+            migrateSchema(stmt);
             stmt.execute("PRAGMA foreign_keys=ON");
 
             System.out.println("Database initialized successfully");
@@ -64,6 +65,7 @@ public class Database {
                 email            TEXT UNIQUE NOT NULL,
                 full_name        TEXT NOT NULL,
                 role             TEXT NOT NULL CHECK (role IN ('BORROWER', 'ADMIN')),
+                password_hash    TEXT,
                 created_at       TEXT NOT NULL
             )
         """);
@@ -134,5 +136,14 @@ public class Database {
                 created_at  TEXT NOT NULL
             )
         """);
+    }
+
+    private static void migrateSchema(Statement stmt) throws SQLException {
+        // Adds columns introduced after initial schema — safe to run on existing DBs
+        try {
+            stmt.execute("ALTER TABLE users ADD COLUMN password_hash TEXT");
+        } catch (SQLException e) {
+            // Column already exists — ignore
+        }
     }
 }

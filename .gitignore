@@ -57,14 +57,13 @@ Desktop.ini
 # ── Docker runtime data (live in named volumes) ───────────────
 # Do NOT commit generated DB / files — these are volume-managed
 floucna.db
-contracts/
 uploads/
 
 # ── Logs ──────────────────────────────────────────────────────
 *.log
 logs/
 
-# ── LaTeX Report ──────────────────────────────────────────────
+# ── Reports ──────────────────────────────────────────────
 latex/
 log.md
-
+implementation_plan.md

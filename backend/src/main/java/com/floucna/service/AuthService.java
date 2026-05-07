@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.floucna.db.Database;
 import com.floucna.util.ApiException;
+import com.floucna.util.InputValidator;
+import com.floucna.util.JwtUtil;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -20,6 +22,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import org.mindrot.jbcrypt.BCrypt;
 
 public class AuthService {
 
@@ -29,6 +32,8 @@ public class AuthService {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final HttpClient HTTP = HttpClient.newHttpClient();
     private static final String MODE = System.getenv().getOrDefault("FLOUCNA_AUTH_MODE", "LOCAL").toUpperCase(Locale.ROOT);
+    private static final String JWT_SECRET = System.getenv("FLOUCNA_JWT_SECRET");
+    private static final long TOKEN_EXPIRY_SECONDS = 8 * 3600L;
 
     public ExternalIdentity resolveExternalIdentity(String bearerToken) {
         if (bearerToken == null || bearerToken.isBlank()) {
@@ -137,6 +142,88 @@ public class AuthService {
         }
     }
 
+    public Map<String, Object> registerLocal(String rawEmail, String rawPassword, String rawFullName) {
+        if (JWT_SECRET == null || JWT_SECRET.isBlank()) {
+            throw new ApiException(500, "Local auth is not configured (missing FLOUCNA_JWT_SECRET)");
+        }
+        String email = InputValidator.requireEmail(rawEmail, "Email");
+        String password = InputValidator.requirePassword(rawPassword);
+        String fullName = InputValidator.requireName(rawFullName, "Full name", 100);
+
+        try (Connection conn = Database.connect()) {
+            PreparedStatement check = conn.prepareStatement("SELECT id FROM users WHERE email = ?");
+            check.setString(1, email);
+            if (check.executeQuery().next()) {
+                throw new ApiException(409, "Email already registered");
+            }
+
+            String userId = UUID.randomUUID().toString();
+            String passwordHash = BCrypt.hashpw(password, BCrypt.gensalt(12));
+
+            PreparedStatement ins = conn.prepareStatement(
+                "INSERT INTO users (id, provider_subject, email, full_name, role, password_hash, created_at) VALUES (?,?,?,?,?,?,?)"
+            );
+            ins.setString(1, userId);
+            ins.setString(2, "local:" + userId);
+            ins.setString(3, email);
+            ins.setString(4, fullName);
+            ins.setString(5, "BORROWER");
+            ins.setString(6, passwordHash);
+            ins.setString(7, Instant.now().toString());
+            ins.executeUpdate();
+
+            return Map.of("token", generateToken(userId, email, fullName, "BORROWER"));
+        } catch (ApiException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ApiException(500, "Registration failed");
+        }
+    }
+
+    public Map<String, Object> loginLocal(String rawEmail, String rawPassword) {
+        if (JWT_SECRET == null || JWT_SECRET.isBlank()) {
+            throw new ApiException(500, "Local auth is not configured (missing FLOUCNA_JWT_SECRET)");
+        }
+        if (rawEmail == null || rawEmail.isBlank()) {
+            throw new IllegalArgumentException("Email is required");
+        }
+        if (rawPassword == null || rawPassword.isBlank()) {
+            throw new IllegalArgumentException("Password is required");
+        }
+        String email = rawEmail.trim().toLowerCase(Locale.ROOT);
+
+        try (Connection conn = Database.connect()) {
+            PreparedStatement ps = conn.prepareStatement(
+                "SELECT id, full_name, role, password_hash FROM users WHERE email = ? AND password_hash IS NOT NULL"
+            );
+            ps.setString(1, email);
+            ResultSet rs = ps.executeQuery();
+
+            if (!rs.next() || !BCrypt.checkpw(rawPassword, rs.getString("password_hash"))) {
+                throw new ApiException(401, "Invalid email or password");
+            }
+
+            return Map.of("token", generateToken(
+                rs.getString("id"), email, rs.getString("full_name"), rs.getString("role")
+            ));
+        } catch (ApiException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ApiException(500, "Login failed");
+        }
+    }
+
+    private String generateToken(String userId, String email, String fullName, String role) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("sub", "local:" + userId);
+        payload.put("email", email);
+        payload.put("name", fullName);
+        payload.put("roles", List.of(role));
+        payload.put("iat", Instant.now().getEpochSecond());
+        payload.put("exp", Instant.now().getEpochSecond() + TOKEN_EXPIRY_SECONDS);
+        return JwtUtil.sign(payload, JWT_SECRET);
+    }
+
     private ExternalIdentity resolveFromKeycloakIntrospection(String token) throws Exception {
         String introspectionUrl = requiredEnv("FLOUCNA_KEYCLOAK_INTROSPECTION_URL");
         String clientId = requiredEnv("FLOUCNA_KEYCLOAK_CLIENT_ID");
@@ -178,13 +265,18 @@ public class AuthService {
     }
 
     private ExternalIdentity resolveFromLocalToken(String token) throws Exception {
-        String[] parts = token.split("\\.");
-        if (parts.length < 2) {
-            throw new ApiException(401, "Malformed local token");
+        Map<String, Object> payload;
+        if (JWT_SECRET != null && !JWT_SECRET.isBlank()) {
+            payload = JwtUtil.verify(token, JWT_SECRET);
+        } else {
+            // Unsigned fallback for dev environments without a configured secret
+            String[] parts = token.split("\\.");
+            if (parts.length < 2) {
+                throw new ApiException(401, "Malformed local token");
+            }
+            String payloadJson = new String(Base64.getUrlDecoder().decode(parts[1]), StandardCharsets.UTF_8);
+            payload = JSON.readValue(payloadJson, new TypeReference<>() {});
         }
-
-        String payloadJson = new String(Base64.getUrlDecoder().decode(parts[1]), StandardCharsets.UTF_8);
-        Map<String, Object> payload = JSON.readValue(payloadJson, new TypeReference<>() {});
 
         String subject = asString(payload.get("sub"));
         if (subject == null || subject.isBlank()) {

@@ -35,6 +35,12 @@ async function request(path: string, options: RequestInit = {}, tokenOverride?: 
 export const api = {
   me: (tokenOverride?: string) => request('/api/me', {}, tokenOverride),
 
+  authLogin: (email: string, password: string) =>
+    request('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  authRegister: (email: string, password: string, fullName: string) =>
+    request('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, password, fullName }) }),
+
+
   adminStats: () => request('/api/admin/stats'),
   adminUsers: () => request('/api/admin/users'),
 

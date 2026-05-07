@@ -96,6 +96,13 @@
       <version>${dss.version}</version>
     </dependency>
 
+    <!-- BCrypt password hashing -->
+    <dependency>
+      <groupId>org.mindrot</groupId>
+      <artifactId>jbcrypt</artifactId>
+      <version>0.4</version>
+    </dependency>
+
     <!-- Logging -->
     <dependency>
       <groupId>org.slf4j</groupId>

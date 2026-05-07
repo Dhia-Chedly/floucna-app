@@ -74,7 +74,9 @@ public class AdminController {
     }
 
     private static long count(Connection conn, String sql) throws Exception {
-        ResultSet rs = conn.createStatement().executeQuery(sql);
-        return rs.next() ? rs.getLong(1) : 0L;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ResultSet rs = ps.executeQuery();
+            return rs.next() ? rs.getLong(1) : 0L;
+        }
     }
 }
