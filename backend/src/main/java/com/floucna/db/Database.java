@@ -140,8 +140,17 @@ public class Database {
 
     private static void migrateSchema(Statement stmt) throws SQLException {
         // Adds columns introduced after initial schema — safe to run on existing DBs
+        alterIgnore(stmt, "ALTER TABLE users ADD COLUMN password_hash TEXT");
+        alterIgnore(stmt, "ALTER TABLE kyc_records ADD COLUMN id_front_path TEXT");
+        alterIgnore(stmt, "ALTER TABLE kyc_records ADD COLUMN id_back_path TEXT");
+        alterIgnore(stmt, "ALTER TABLE kyc_records ADD COLUMN face_path TEXT");
+        alterIgnore(stmt, "ALTER TABLE kyc_records ADD COLUMN reviewed_by TEXT REFERENCES users(id)");
+        alterIgnore(stmt, "ALTER TABLE kyc_records ADD COLUMN reviewed_at TEXT");
+    }
+
+    private static void alterIgnore(Statement stmt, String sql) throws SQLException {
         try {
-            stmt.execute("ALTER TABLE users ADD COLUMN password_hash TEXT");
+            stmt.execute(sql);
         } catch (SQLException e) {
             // Column already exists — ignore
         }
