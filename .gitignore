@@ -2,14 +2,37 @@
 #  Floucna Mina Fina — Root .gitignore
 # ──────────────────────────────────────────────────────────────
 
+# ── Markdown docs (keep only README.md) ───────────────────────
+# All .md files are excluded from the public repo.
+# The root README.md and any subproject README.md are explicitly
+# allowed below via negation rules.
+*.md
+!README.md
+**/README.md
+# Explicit denials for known doc files (belt-and-suspenders)
+guide.md
+log.md
+implementation_plan.md
+floucna_project15_enhanced_hld.md
+
 # ── Environment & Secrets ─────────────────────────────────────
 .env
 .env.local
 .env.*.local
+.env.development
+.env.production
+.env.staging
+.env.test
+**/.env
+**/.env.local
+**/.env.*.local
 *.pem
 *.key
 *.p12
 *.jks
+*.pfx
+*.keystore
+*.secret
 
 # ── OS ────────────────────────────────────────────────────────
 .DS_Store

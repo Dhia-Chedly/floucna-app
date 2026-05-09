@@ -36,7 +36,10 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# ── Agent/AI metadata (not relevant for teammates) ────────────
+# ── Markdown docs (keep only README.md) ──────────────────────
+*.md
+!README.md
+# AI/agent metadata — never publish
 AGENTS.md
 CLAUDE.md
 
